@@ -78,7 +78,8 @@ def paraxial_surfaces(params, layout: Layout, spec: Spec, beta=1.0):
             out.append(ParaxialSurface("STOP", z, 0.0, air, air, is_stop=True))
         else:
             i = item
-            glass = {w: G.index(p["nd"][i], p["vd"][i], w, beta) for w in wls}
+            glass = {w: G.index_at(p, i, w, beta, layout) for w in wls}
+            nd_i = G.index_at(p, i, G.LAMBDA_D, 0.0, layout)
             out.append(ParaxialSurface(f"E{i}.1", z, p["c1"][i], air, glass, element=i))
             z = z + p["t"][i]
             a4 = p["asph"][i][0] / layout.r_norm**4 if layout.aspheres else 0.0
@@ -86,7 +87,7 @@ def paraxial_surfaces(params, layout: Layout, spec: Spec, beta=1.0):
             phi_ph = -2.0 * p["phase"][i][0] / layout.r_norm**2
             b4 = p["phase"][i][1] / layout.r_norm**4 if p["phase"].shape[1] > 1 else 0.0
             # phase disperses like the element's glass: N(lambda)-1 = (N-1) kappa
-            kap = {w: (glass[w] - 1.0) / (p["nd"][i] - 1.0) for w in wls}
+            kap = {w: (glass[w] - 1.0) / (nd_i - 1.0) for w in wls}
             sweatt = {w: 1.0 + (N - 1.0) * kap[w] for w in wls}
             ca, cb = p["c2"][i] + phi_ph / (N - 1.0), p["c2"][i]
             # Fourth-order term of the Sweatt lens.  For N -> inf a ray inside travels

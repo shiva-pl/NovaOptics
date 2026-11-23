@@ -53,7 +53,9 @@ def meridional_rays(params, layout: Layout, spec: Spec, beta=1.0, n_rays=7, frac
 
 
 def draw_layout(ax, params, layout: Layout, spec: Spec, beta=1.0, title=None, sd=None):
-    p = {k: np.asarray(v) for k, v in params.items()}
+    from .glass import resolve
+
+    p = {k: np.asarray(v) for k, v in resolve(params, layout).items()}
     if sd is None:
         ev = A.evaluate(params, layout, spec, beta)
         sd = np.asarray(A.clear_semi_diameters(ev))

@@ -113,3 +113,64 @@ def glass_name(nd, vd, tol=1e-6):
         if abs(n - nd) < tol and abs(v - vd) < tol:
             return name
     return f"model({nd:.4f}/{vd:.1f})"
+
+
+# --------------------------------------------------------------------------------
+# Glass model dispatch.  Without a glass space on the layout, an element's glass is
+# the Cauchy (n_d, V_d) model above.  With `layout.glass` (a catalog.GlassSpace) it is
+#
+#     n(lambda_k) = mu_k + sum_j B_kj (g_j * scale_j) + gr_k
+#
+# with normalized PCA coordinates g (free) and a fixed residual gr (zero for a
+# continuous glass, the exact off-span part of a snapped catalog glass).  beta keeps
+# its meaning: n_beta = n_d + beta (n - n_d).
+
+def _pca_curve(params, i, gs):
+    return (jnp.asarray(gs.mu) + jnp.asarray(gs.B) @ (params["g"][i] * jnp.asarray(gs.scale))
+            + params["gr"][i])
+
+
+def index_at(params, i, wavelength, beta, layout):
+    gs = getattr(layout, "glass", None)
+    if gs is None:
+        return index(params["nd"][i], params["vd"][i], wavelength, beta)
+    x = _pca_curve(params, i, gs)
+    # wavelength may be traced (vmapped in the ray trace): interpolate on the grid,
+    # which is exact at grid points (all design wavelengths are on the grid)
+    n = jnp.interp(wavelength, jnp.asarray(gs.grid), x)
+    nd = x[gs.grid_index(LAMBDA_D)]
+    return nd + beta * (n - nd)
+
+
+def nd_vec(params, layout):
+    gs = getattr(layout, "glass", None)
+    if gs is None:
+        return params["nd"]
+    return jnp.stack([_pca_curve(params, i, gs)[gs.grid_index(LAMBDA_D)]
+                      for i in range(layout.n_elem)])
+
+
+def vd_vec(params, layout):
+    gs = getattr(layout, "glass", None)
+    if gs is None:
+        return params["vd"]
+    out = []
+    for i in range(layout.n_elem):
+        x = _pca_curve(params, i, gs)
+        nF, nd, nC = (x[gs.grid_index(w)] for w in (LAMBDA_F, LAMBDA_D, LAMBDA_C))
+        out.append((nd - 1.0) / (nF - nC))
+    return jnp.stack(out)
+
+
+def resolve(params, layout):
+    """Params with `nd`/`vd` filled in from the glass model (no-op for Cauchy)."""
+    if getattr(layout, "glass", None) is None:
+        return params
+    return dict(params, nd=nd_vec(params, layout), vd=vd_vec(params, layout))
+
+
+def space_distance(g, gs, temperature=0.05):
+    """Smooth distance (normalized PCA units) from coordinates g to the nearest glass."""
+    c = jnp.asarray(gs.coords / gs.scale)
+    d = jnp.sqrt(jnp.sum((g[None, :] - c) ** 2, -1) + 1e-12)
+    return -temperature * jnp.log(jnp.sum(jnp.exp(-d / temperature)))

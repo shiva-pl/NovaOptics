@@ -57,6 +57,16 @@ DEFAULT_CFG = dict(
 )
 
 
+def gs_radius(gs):
+    """Feasibility radius of a glass space: median nearest-neighbour spacing."""
+    if not hasattr(gs, "_radius"):
+        c = gs.coords / gs.scale
+        d = np.sqrt(((c[:, None, :] - c[None, :, :]) ** 2).sum(-1))
+        np.fill_diagonal(d, np.inf)
+        gs._radius = float(np.median(d.min(1)))
+    return gs._radius
+
+
 def make_cfg(**kw):
     cfg = dict(DEFAULT_CFG)
     cfg.update(kw)
@@ -81,10 +91,11 @@ def rear_sag(params, layout: Layout, i, r):
 
 def virtual_petzval_curvature(params, layout: Layout):
     phi_phase = -2.0 * params["phase"][:, 0] / layout.r_norm**2
-    return jnp.sum(phi_phase / params["nd"])
+    return jnp.sum(phi_phase / G.nd_vec(params, layout))
 
 
 def residuals(params, layout: Layout, spec: Spec, cfg):
+    params = G.resolve(params, layout)  # n_d, V_d derived from PCA glass coordinates
     c_img = cfg["virtual_petzval"] * virtual_petzval_curvature(params, layout)
     ev = evaluate(params, layout, spec, cfg["beta"], c_img=c_img)
 
@@ -154,19 +165,25 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
 
         ew = element_waves(params, layout, spec, cfg["beta"])[:, :3]
         r_content = jnp.sqrt(cfg["w_content"]) * ew.ravel()
-    gdist = jnp.stack(
-        [G.catalog_softmin_distance(params["nd"][i], params["vd"][i]) for i in range(layout.n_elem)]
-    )
+    if layout.glass is None:
+        gdist = jnp.stack([G.catalog_softmin_distance(params["nd"][i], params["vd"][i])
+                           for i in range(layout.n_elem)])
+        r_gbounds = wc * jnp.concatenate(
+            [
+                _hinge(G.ND_BOUNDS[0] - params["nd"]) * 10,
+                _hinge(params["nd"] - G.ND_BOUNDS[1]) * 10,
+                _hinge(G.VD_BOUNDS[0] - params["vd"]) / 10,
+                _hinge(params["vd"] - G.VD_BOUNDS[1]) / 10,
+                *(v / 5 for v in G.glass_region_violation(params["nd"], params["vd"])),
+            ]
+        )
+    else:
+        # PCA glass space: stay within the catalog's footprint.  Distances are in
+        # normalized PCA units; beyond the typical neighbour spacing the penalty acts.
+        gs = layout.glass
+        gdist = jnp.stack([G.space_distance(params["g"][i], gs) for i in range(layout.n_elem)])
+        r_gbounds = wc * _hinge(gdist - gs_radius(gs))
     r_glass = jnp.sqrt(cfg["nu"]) * gdist
-    r_gbounds = wc * jnp.concatenate(
-        [
-            _hinge(G.ND_BOUNDS[0] - params["nd"]) * 10,
-            _hinge(params["nd"] - G.ND_BOUNDS[1]) * 10,
-            _hinge(G.VD_BOUNDS[0] - params["vd"]) / 10,
-            _hinge(params["vd"] - G.VD_BOUNDS[1]) / 10,
-            *(v / 5 for v in G.glass_region_violation(params["nd"], params["vd"])),
-        ]
-    )
 
     return jnp.concatenate(
         [r_wfe, r_spot, jnp.atleast_1d(r_efl), r_dist, r_cons, r_phase, r_asph, r_content, r_glass,

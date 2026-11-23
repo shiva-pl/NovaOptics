@@ -43,6 +43,7 @@ class Layout:
     r_norm: float = 10.0
     z_launch: float = -20.0  # launch plane for rays, in front of the first item
     aspheres: bool = False  # even aspheric terms (orders 4..2*n_phase) on rear surfaces
+    glass: object = None  # catalog.GlassSpace -> PCA glass coordinates; None -> (n_d, V_d)
 
     def items(self):
         """Sequence of items: element indices and the string 'stop'."""
@@ -82,7 +83,7 @@ class Spec:
 
 def new_params(layout: Layout, gaps=None, bfd=50.0, nd=1.62, vd=50.0):
     n = layout.n_elem
-    return {
+    out = {
         "c1": jnp.zeros(n),
         "c2": jnp.zeros(n),
         "t": jnp.zeros(n),
@@ -90,9 +91,37 @@ def new_params(layout: Layout, gaps=None, bfd=50.0, nd=1.62, vd=50.0):
         "vd": jnp.full(n, vd),
         "phase": jnp.zeros((n, layout.n_phase)),
         "asph": jnp.zeros((n, layout.n_phase - 1)),
+        **({"g": jnp.zeros((n, layout.glass.k)),
+            "gr": jnp.zeros((n, len(layout.glass.grid)))} if layout.glass is not None else {}),
         "gaps": jnp.asarray(gaps if gaps is not None else np.full(n, 5.0), dtype=float),
         "bfd": jnp.asarray(bfd, dtype=float),
     }
+    if layout.glass is not None:
+        out = dict(out)
+        set_glass(out, layout, list(range(n)), [nearest_in_space(layout.glass, nd, vd)] * n)
+    return out
+
+
+def nearest_in_space(gs, nd, vd):
+    """Catalog glass of a glass space closest to (n_d, V_d)."""
+    d = ((gs.nd - nd) / 0.1) ** 2 + ((gs.vd - vd) / 10.0) ** 2
+    return int(np.argmin(d))
+
+
+def set_glass(params, layout, elems, glass_ids, exact=True):
+    """Put catalog glass `glass_ids[k]` into element `elems[k]` (PCA mode).
+
+    exact=True also sets the off-span residual, so the index curve is the catalog's.
+    """
+    gs = layout.glass
+    g = np.array(params["g"], dtype=float)
+    gr = np.array(params["gr"], dtype=float)
+    for e, j in zip(elems, glass_ids):
+        g[e] = gs.coords[j] / gs.scale
+        gr[e] = gs.resid[j] if exact else 0.0
+    params["g"] = jnp.asarray(g)
+    params["gr"] = jnp.asarray(gr)
+    return params
 
 
 def to_numpy(params):
@@ -116,9 +145,22 @@ def vertex_positions(params, layout: Layout):
     return out
 
 
+def glass_label(p, layout, i):
+    """Catalog name if element i holds an exact catalog glass, else a model label."""
+    gs = layout.glass
+    if gs is None:
+        return G.glass_name(p["nd"][i], p["vd"][i])
+    c = gs.coords / gs.scale
+    j = int(np.argmin(((c - p["g"][i]) ** 2).sum(-1)))
+    if np.allclose(c[j], p["g"][i], atol=1e-9) and np.allclose(gs.resid[j], p["gr"][i],
+                                                               atol=1e-12):
+        return gs.names[j]
+    return f"pca({p['nd'][i]:.4f}/{p['vd'][i]:.1f})"
+
+
 def describe(params, layout: Layout, spec: Spec | None = None) -> str:
     """Human-readable prescription."""
-    p = to_numpy(params)
+    p = to_numpy(G.resolve(params, layout))
     lines = [
         f"{'item':<8}{'R1 [mm]':>11}{'R2 [mm]':>11}{'t [mm]':>8}{'glass':>22}{'gap->':>9}"
         f"{'  max |W| [waves]':>18}"
@@ -132,7 +174,7 @@ def describe(params, layout: Layout, spec: Spec | None = None) -> str:
         i = item
         r1 = "inf" if abs(p["c1"][i]) < 1e-9 else f"{1 / p['c1'][i]:.3f}"
         r2 = "inf" if abs(p["c2"][i]) < 1e-9 else f"{1 / p['c2'][i]:.3f}"
-        gname = G.glass_name(p["nd"][i], p["vd"][i])
+        gname = glass_label(p, layout, i)
         if layout.aspheres and np.any(np.abs(p["asph"][i]) > 1e-9):
             r2 = r2 + "*"
         rr = np.linspace(0, 1, 50) ** 2

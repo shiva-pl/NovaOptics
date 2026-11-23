@@ -20,7 +20,7 @@ from . import glass as G
 from .continuation import Mech, Recorder, _glass_vars, stage_catalog
 from .merit import make_cfg
 from .optimize import optimize
-from .system import Layout, Spec, new_params
+from .system import Layout, Spec, nearest_in_space, new_params, set_glass
 
 
 def cooke_start(lay: Layout, spec: Spec, rng, spread=0.3):
@@ -34,16 +34,21 @@ def cooke_start(lay: Layout, spec: Spec, rng, spread=0.3):
     dc = phis / (nd - 1)
     p.update(c1=jnp.asarray(0.5 * (1 + X) * dc), c2=jnp.asarray(0.5 * (X - 1) * dc),
              t=jnp.full(3, 4.0), nd=jnp.asarray(nd), vd=jnp.asarray(vd))
+    if lay.glass is not None:
+        gs = lay.glass
+        ids = [gs.find(n) if n in gs.names else nearest_in_space(gs, a, b)
+               for n, (a, b) in zip(("N-SK16", "F2", "N-SK16"), zip(nd, vd))]
+        set_glass(p, lay, [0, 1, 2], ids)
     return p
 
 
 def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech=Mech(),
-                 iters=200, seed=0, verbose=True):
-    lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres)
+                 iters=200, seed=0, verbose=True, glass=None):
+    lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres, glass=glass)
     rng = np.random.default_rng(seed)
     cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
                    w_content=mech.w_content)
-    free = {k: True for k in _glass_vars(lay) if free_glass or k not in ("nd", "vd")}
+    free = {k: True for k in _glass_vars(lay, glass=free_glass)}
     runs = []
     t0 = time.time()
     for trial in range(n_starts):
