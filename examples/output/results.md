@@ -1,15 +1,15 @@
 | design | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [um] | max distortion | time [s] |
 |---|---|---|---|---|---|
-| phase-first, aspheric | 0.186 | 0.260 | 4.3 | 0.71% | 365 |
-| phase-first, spherical (asphere fade) | 0.344 | 0.444 | 7.6 | 0.87% | 121 |
-| conventional, aspheric | 0.157 | 0.235 | 4.1 | 0.77% | 74 |
-| conventional, spherical | 0.332 | 0.476 | 5.9 | 1.07% | 38 |
+| phase-first, aspheric | 0.186 | 0.260 | 4.3 | 0.71% | 243 |
+| phase-first, spherical (asphere fade) | 0.344 | 0.444 | 7.6 | 0.87% | 83 |
+| conventional, aspheric | 0.157 | 0.235 | 4.1 | 0.77% | 41 |
+| conventional, spherical | 0.332 | 0.476 | 5.9 | 1.07% | 21 |
 
 All figures evaluated on 21 field points (0-20 deg) x 8x16 pupil samples, F/d/C, after optimization on 5 field points x 6x12 pupil samples.
 
 ## phase-first, aspheric
 
-architecture ranking in phase space: [('-++', 0.12828666446683284), ('+-+', 0.21071551516066878), ('++-', 0.6617686475886561), ('+++', 2.4379403561899036)]; chosen +-+
+architecture ranking in phase space: [('-++', 0.12828666446706896), ('+-+', 0.21071551516083603), ('++-', 0.6617686475849636), ('+++', 2.437940356190656)]; chosen +-+
 
 ```
 item        R1 [mm]    R2 [mm]  t [mm]                 glass    gap->   max |W| [waves]
