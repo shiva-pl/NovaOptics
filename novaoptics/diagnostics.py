@@ -21,7 +21,11 @@ Ideal phase screens use the Sweatt model: a screen of power phi and r^4 phase b4
 a substrate of curvature c is exactly the N -> infinity limit of a zero-thickness
 lens of index N with curvatures c + phi/(N-1) and c, plus an r^4 asphere chosen
 so its optical thickness (along the local normal, where rays travel as N -> inf)
-reproduces W(x, y) exactly; see `paraxial_surfaces`.  Its Petzval contribution phi/N vanishes, as it should.
+reproduces W(x, y) exactly; see `paraxial_surfaces`.  Its Petzval contribution
+phi/N vanishes, as it should.
+
+The trace is written in jax.numpy: `element_waves` gives differentiable per-element
+coefficients for the aberration-content penalty in the merit function.
 
 The paraxial contributions are cross-checked against `aberration_fit`, a least
 squares fit of the real-ray wavefront (Hopkins expansion through fifth order), in
@@ -47,51 +51,54 @@ W_NAMES = ("W040", "W131", "W222", "W220", "W311", "W020", "W111", "W220P")
 @dataclass
 class ParaxialSurface:
     label: str
-    z: float
-    c: float
+    z: object  # float or traced scalar
+    c: object
     n: dict  # wavelength -> index before
     n2: dict  # wavelength -> index after
-    a4: float = 0.0  # fourth-order aspheric coefficient [1/mm^3]
+    a4: object = 0.0  # fourth-order aspheric coefficient [1/mm^3]
     is_stop: bool = False
+    element: int = -1  # owning element, -1 for the stop
 
 
 def paraxial_surfaces(params, layout: Layout, spec: Spec, beta=1.0):
-    """Flatten the system into paraxial surfaces (phase screens as Sweatt lenses)."""
-    p = {k: np.asarray(v, dtype=float) for k, v in params.items()}
+    """Flatten the system into paraxial surfaces (phase screens as Sweatt lenses).
+
+    Written with jax.numpy so it can sit inside the merit function; the structure
+    (which surfaces exist) depends only on the layout.  Every element gets a Sweatt
+    pair; with zero phase its two surfaces cancel exactly.
+    """
+    p = params
     wls = list(spec.wavelengths)
     air = {w: 1.0 for w in wls}
     out = []
     z = 0.0
+    N = SWEATT_N
     for k, item in enumerate(layout.items()):
         if item == "stop":
             out.append(ParaxialSurface("STOP", z, 0.0, air, air, is_stop=True))
         else:
             i = item
-            glass = {w: float(G.index(p["nd"][i], p["vd"][i], w, beta)) for w in wls}
-            out.append(ParaxialSurface(f"E{i}.1", z, p["c1"][i], air, glass))
-            z += p["t"][i]
-            a4 = 0.0
-            if layout.aspheres:
-                a4 = p["asph"][i][0] / layout.r_norm**4
-            out.append(ParaxialSurface(f"E{i}.2", z, p["c2"][i], glass, air, a4=a4))
+            glass = {w: G.index(p["nd"][i], p["vd"][i], w, beta) for w in wls}
+            out.append(ParaxialSurface(f"E{i}.1", z, p["c1"][i], air, glass, element=i))
+            z = z + p["t"][i]
+            a4 = p["asph"][i][0] / layout.r_norm**4 if layout.aspheres else 0.0
+            out.append(ParaxialSurface(f"E{i}.2", z, p["c2"][i], glass, air, a4=a4, element=i))
             phi_ph = -2.0 * p["phase"][i][0] / layout.r_norm**2
             b4 = p["phase"][i][1] / layout.r_norm**4 if p["phase"].shape[1] > 1 else 0.0
-            if abs(phi_ph) > 0 or abs(b4) > 0:
-                N = SWEATT_N
-                # phase disperses like the element's glass: N(lambda)-1 = (N-1) kappa
-                kap = {w: (glass[w] - 1.0) / (p["nd"][i] - 1.0) for w in wls}
-                sweatt = {w: 1.0 + (N - 1.0) * kap[w] for w in wls}
-                ca, cb = p["c2"][i] + phi_ph / (N - 1.0), p["c2"][i]
-                # Fourth-order term of the Sweatt lens.  For N -> inf a ray inside travels
-                # along the local surface normal, which on a curved substrate is tilted by
-                # ~c r, so W = -(N-1) dz (1 - c^2 r^2 / 2) with dz = sag_a - sag_b.
-                # The two spheres already give dz an r^4 term (ca^3 - cb^3)/8; matching
-                # W = -phi r^2/2 + b4 r^4 leaves a4 = -b4/(N-1) - cb^2 (ca - cb)/8.
-                a4 = -b4 / (N - 1.0) - cb**2 * (ca - cb) / 8.0
-                out.append(ParaxialSurface(f"E{i}.W", z, ca, air, sweatt, a4=a4))
-                out.append(ParaxialSurface(f"E{i}.W'", z, p["c2"][i], sweatt, air))
+            # phase disperses like the element's glass: N(lambda)-1 = (N-1) kappa
+            kap = {w: (glass[w] - 1.0) / (p["nd"][i] - 1.0) for w in wls}
+            sweatt = {w: 1.0 + (N - 1.0) * kap[w] for w in wls}
+            ca, cb = p["c2"][i] + phi_ph / (N - 1.0), p["c2"][i]
+            # Fourth-order term of the Sweatt lens.  For N -> inf a ray inside travels
+            # along the local surface normal, which on a curved substrate is tilted by
+            # ~c r, so W = -(N-1) dz (1 - c^2 r^2 / 2) with dz = sag_a - sag_b.
+            # The two spheres already give dz an r^4 term (ca^3 - cb^3)/8; matching
+            # W = -phi r^2/2 + b4 r^4 leaves a4 = -b4/(N-1) - cb^2 (ca - cb)/8.
+            a4w = -b4 / (N - 1.0) - cb**2 * (ca - cb) / 8.0
+            out.append(ParaxialSurface(f"E{i}.W", z, ca, air, sweatt, a4=a4w, element=i))
+            out.append(ParaxialSurface(f"E{i}.W'", z, cb, sweatt, air, element=i))
         if k < layout.n_gaps:
-            z += p["gaps"][k]
+            z = z + p["gaps"][k]
     return out
 
 
@@ -109,15 +116,11 @@ def _trace(surfs, wl, y0, u0):
         us.append(u)
         ups.append(up)
         u = up
-    return np.array(ys), np.array(us), np.array(ups), y, u
+    return jnp.stack(ys), jnp.stack(us), jnp.stack(ups), y, u
 
 
-def seidel(params, layout: Layout, spec: Spec, beta=1.0, field_frac=1.0):
-    """Per-surface Seidel and primary chromatic contributions (units: mm of OPD).
-
-    Returns a dict with `labels`, `S` [n_surf, 7] in the order of SEIDEL_NAMES,
-    the totals, paraxial EFL/BFD and the Petzval sum.
-    """
+def _seidel_core(params, layout: Layout, spec: Spec, beta=1.0, field_frac=1.0):
+    """Traceable core: per-paraxial-surface contributions [n_surf, 7] and the traces."""
     surfs = paraxial_surfaces(params, layout, spec, beta)
     wls = list(spec.wavelengths)
     wd = spec.ref_wavelength
@@ -133,13 +136,13 @@ def seidel(params, layout: Layout, spec: Spec, beta=1.0, field_frac=1.0):
     y0c = -ubar * yb[ks] / ya[ks]
     yc, uc, upc, *_ = _trace(surfs, wd, y0c, ubar)
 
-    H = 1.0 * (ubar * ym[0] - 0.0 * yc[0])  # n (ub y - u yb) at the first surface, n = 1
+    H = ubar * ymarg  # Lagrange invariant n (ub y - u yb) at the first surface (u = 0)
     rows = []
     for j, s in enumerate(surfs):
-        n, n2 = s.n[wd], s.n2[wd]
-        if s.is_stop or (n == n2 and s.c == 0 and s.a4 == 0):
-            rows.append(np.zeros(7))
+        if s.is_stop:
+            rows.append(jnp.zeros(7))
             continue
+        n, n2 = s.n[wd], s.n2[wd]
         Am = n * (um[j] + ym[j] * s.c)
         Ac = n * (uc[j] + yc[j] * s.c)
         dU = upm[j] / n2 - um[j] / n
@@ -147,48 +150,86 @@ def seidel(params, layout: Layout, spec: Spec, beta=1.0, field_frac=1.0):
         SII = -Am * Ac * ym[j] * dU
         SIII = -Ac**2 * ym[j] * dU
         SIV = -H**2 * s.c * (1.0 / n2 - 1.0 / n)
-        SV = (Ac / Am) * (SIII + SIV) if abs(Am) > 1e-15 else 0.0
-        if s.a4 != 0.0:
-            dSI = 8.0 * s.a4 * (n2 - n) * ym[j] ** 4
-            r = yc[j] / ym[j]
-            SI += dSI
-            SII += dSI * r
-            SIII += dSI * r**2
-            SV += dSI * r**3
-        dn1 = s.n[wF] - s.n[wC]
-        dn2 = s.n2[wF] - s.n2[wC]
-        dd = dn2 / n2 - dn1 / n
+        # S_V = (Ab/A)(S_III + S_IV); A can vanish (collimated beam on a flat surface),
+        # where S_III + S_IV vanishes too.  Safe division keeps values finite.
+        Am_safe = jnp.where(jnp.abs(Am) > 1e-14, Am, 1e-14)
+        SV = Ac / Am_safe * (SIII + SIV)
+        # aspheric terms, written without dividing by y
+        k4 = 8.0 * s.a4 * (n2 - n)
+        SI = SI + k4 * ym[j] ** 4
+        SII = SII + k4 * ym[j] ** 3 * yc[j]
+        SIII = SIII + k4 * ym[j] ** 2 * yc[j] ** 2
+        SV = SV + k4 * ym[j] * yc[j] ** 3
+        dd = (s.n2[wF] - s.n2[wC]) / n2 - (s.n[wF] - s.n[wC]) / n
         CI = Am * ym[j] * dd
         CII = Ac * ym[j] * dd
-        rows.append(np.array([SI, SII, SIII, SIV, SV, CI, CII]))
+        rows.append(jnp.stack([SI, SII, SIII, SIV, SV, CI, CII]))
+    return surfs, jnp.stack(rows), dict(ym=ym, y_end=y_end, u_end=u_end, y0c=y0c, ubar=ubar,
+                                        H=H, ymarg=ymarg)
+
+
+def element_waves(params, layout: Layout, spec: Spec, beta=1.0):
+    """Per-element wavefront coefficients [n_elem, len(W_NAMES)] in d-line waves.
+
+    An element's contribution is the sum over its two glass surfaces and its phase
+    screen.  Differentiable: used by the aberration-content penalty in the merit.
+    """
+    surfs, S, _ = _seidel_core(params, layout, spec, beta)
+    lam = spec.ref_wavelength * 1e-3
+    rows = []
+    for i in range(layout.n_elem):
+        idx = [j for j, s in enumerate(surfs) if s.element == i]
+        rows.append(jnp.sum(S[jnp.asarray(idx)], axis=0))
+    return _to_w(jnp.stack(rows), lam)
+
+
+def seidel(params, layout: Layout, spec: Spec, beta=1.0, field_frac=1.0):
+    """Per-surface Seidel and primary chromatic contributions (units: mm of OPD).
+
+    Returns a dict with `labels`, `S` [n_surf, 7] in the order of SEIDEL_NAMES (each
+    phase screen's Sweatt pair merged into one `E<i>.W` row), the totals, paraxial
+    EFL/BFD, the Lagrange invariant and the exact paraxial color.
+    """
+    surfs, S, tr = _seidel_core(params, layout, spec, beta, field_frac)
+    S = np.asarray(S)
+    labels, rows = [], []
+    for s, row in zip(surfs, S):
+        if s.label.endswith("W'"):
+            rows[-1] = rows[-1] + row
+            continue
+        labels.append(s.label)
+        rows.append(row)
     S = np.array(rows)
-    efl = -ymarg / u_end
+    wls = list(spec.wavelengths)
+    wd, wF, wC = spec.ref_wavelength, wls[0], wls[-1]
+    u_end, y_end = float(tr["u_end"]), float(tr["y_end"])
+    efl = -tr["ymarg"] / u_end
     bfd = -y_end / u_end
 
     # Exact paraxial color (all orders in dn): trace marginal and chief rays at F and C
     # and measure at the d-line paraxial image.  For well-corrected systems the total
     # first-order C_I, C_II is a small difference of large terms and the dn^2 terms
     # left out of it are not negligible.
-    z_img = surfs[-1].z + bfd
+    z_last = float(surfs[-1].z)
+    z_img = z_last + bfd
     lam = wd * 1e-3
     out = {}
     for w in (wF, wC):
-        _, _, _, yme, ume = _trace(surfs, w, ymarg, 0.0)
-        _, _, _, yce, uce = _trace(surfs, w, y0c, ubar)
-        out[w] = (-yme / ume, yce + (z_img - surfs[-1].z) * uce)
+        _, _, _, yme, ume = _trace(surfs, w, tr["ymarg"], 0.0)
+        _, _, _, yce, uce = _trace(surfs, w, tr["y0c"], tr["ubar"])
+        out[w] = (float(-yme / ume), float(yce + (z_img - z_last) * uce))
     dz = out[wF][0] - out[wC][0]
     dy = out[wF][1] - out[wC][1]
-    w020_exact = -dz * u_end**2 / 2 / lam
-    w111_exact = dy * u_end / lam
-    return {"labels": [s.label for s in surfs], "S": S, "total": S.sum(0), "efl": efl,
-            "bfd_paraxial": bfd, "lagrange": H, "axial_color_mm": dz,
-            "lateral_color_mm": dy, "W020_exact": w020_exact, "W111_exact": w111_exact}
+    return {"labels": labels, "S": S, "total": S.sum(0), "efl": efl,
+            "bfd_paraxial": bfd, "lagrange": float(tr["H"]), "axial_color_mm": dz,
+            "lateral_color_mm": dy, "W020_exact": -dz * u_end**2 / 2 / lam,
+            "W111_exact": dy * u_end / lam}
 
 
 def _to_w(S, lam):
-    SI, SII, SIII, SIV, SV, CI, CII = np.moveaxis(S, -1, 0)
-    W = np.stack([SI / 8, SII / 2, SIII / 2, (SIII + SIV) / 4, SV / 2, CI / 2, CII, SIV / 4],
-                 axis=-1)
+    SI, SII, SIII, SIV, SV, CI, CII = jnp.moveaxis(jnp.asarray(S), -1, 0)
+    W = jnp.stack([SI / 8, SII / 2, SIII / 2, (SIII + SIV) / 4, SV / 2, CI / 2, CII, SIV / 4],
+                  axis=-1)
     return W / lam
 
 
@@ -199,7 +240,7 @@ def seidel_waves(sd, spec: Spec):
     is its Petzval part.  Per-surface rows and system totals are returned.
     """
     lam = spec.ref_wavelength * 1e-3
-    return _to_w(sd["S"], lam), _to_w(sd["total"], lam)
+    return np.asarray(_to_w(sd["S"], lam)), np.asarray(_to_w(sd["total"], lam))
 
 
 def element_contributions(sd):

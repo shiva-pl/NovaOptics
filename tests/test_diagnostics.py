@@ -96,3 +96,30 @@ def test_paraxial_efl_matches_real_ray_efl():
     p, lay = cooke()
     assert D.seidel(p, lay, SLOW)["efl"] == pytest.approx(
         float(A.paraxial_efl(p, lay, SLOW)), rel=1e-6)
+
+
+def test_element_waves_sum_to_total_and_are_differentiable():
+    p, lay = cooke()
+    ew = np.asarray(D.element_waves(p, lay, SLOW))
+    _, Wt = D.seidel_waves(D.seidel(p, lay, SLOW), SLOW)
+    np.testing.assert_allclose(ew.sum(0), Wt, rtol=1e-9, atol=1e-12)
+
+    def coma_e1(c):
+        q = dict(p)
+        q["c1"] = q["c1"].at[1].set(c)
+        return D.element_waves(q, lay, SLOW)[1, 1]
+
+    c0, h = float(p["c1"][1]), 1e-7
+    g = float(jax.grad(coma_e1)(c0))
+    fd = float((coma_e1(c0 + h) - coma_e1(c0 - h)) / (2 * h))
+    assert g == pytest.approx(fd, rel=1e-5)
+
+
+def test_content_penalty_enters_merit():
+    from novaoptics.merit import make_cfg, residuals
+
+    p, lay = cooke()
+    r0 = residuals(p, lay, SLOW, make_cfg(w_content=0.0))
+    r1 = residuals(p, lay, SLOW, make_cfg(w_content=1.0))
+    ew = np.asarray(D.element_waves(p, lay, SLOW))[:, :3]
+    assert float(r1 @ r1 - r0 @ r0) == pytest.approx(float(np.sum(ew**2)), rel=1e-9)

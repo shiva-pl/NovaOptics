@@ -41,7 +41,8 @@ def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech
                  iters=200, seed=0, verbose=True):
     lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres)
     rng = np.random.default_rng(seed)
-    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax)
+    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
+                   w_content=mech.w_content)
     free = {k: True for k in _glass_vars(lay) if free_glass or k not in ("nd", "vd")}
     runs = []
     t0 = time.time()

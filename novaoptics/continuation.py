@@ -74,12 +74,17 @@ class Recorder:
 
 @dataclass(frozen=True)
 class Mech:
-    """Manufacturing limits applied at the end of the morph [mm]."""
+    """Manufacturing limits applied at the end of the morph [mm], and the
+    aberration-content weight used in every stage after IDEAL."""
 
     tmin: float = 2.0
     emin: float = 1.0
     gmin: float = 1.0
     tmax: float = 8.0
+    # Weight of the per-element aberration-content penalty (see merit.py).  Large
+    # contributions that cancel between elements make tight tolerances, so this is
+    # a manufacturability setting as much as an optical one.
+    w_content: float = 0.0
 
 
 def _powers(phase, r_norm):
@@ -133,7 +138,8 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
     p["phase"] = jnp.zeros((n_elem, lay.n_phase)).at[:, 0].set(p0["phase"][0, 0] * pattern)
     rec.add("distribute", 0, p, lay, 0.0, f"split into {n_elem} screens  "
             f"powers[1/m] {_powers(p['phase'], lay.r_norm)}", virtual_petzval)
-    cfg = make_cfg(beta=0.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval)
+    cfg = make_cfg(beta=0.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
+                   w_content=mech.w_content)
     free = {"phase": True, "gaps": True, "bfd": True, "nd": True}
     p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
     rec.add("distribute", 1, p, lay, 0.0,
@@ -146,7 +152,8 @@ def stage_color(p, lay: Layout, spec: Spec, rec: Recorder, steps=5, iters=40, me
                 virtual_petzval=1.0):
     free = {"phase": True, "gaps": True, "bfd": True, "nd": True, "vd": True}
     for k, beta in enumerate(np.linspace(0, 1, steps + 1)[1:], start=1):
-        cfg = make_cfg(beta=beta, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval)
+        cfg = make_cfg(beta=beta, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
+                       w_content=mech.w_content)
         p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
         rec.add("color", k, p, lay, beta, f"beta={beta:.2f}  glasses {_glasses(p)}",
                 virtual_petzval)
@@ -191,7 +198,8 @@ def morph_to_params(z, cfg, layout: Layout):
 
 
 def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters=30,
-                      mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80):
+                      mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80,
+                      free_curvature=True):
     n = lay.n_elem
     z = {
         "phi": -2.0 * p["phase"][:, 0] / lay.r_norm**2,
@@ -203,6 +211,11 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
         "gaps": p["gaps"],
         "bfd": p["bfd"],
     }
+    if free_curvature:
+        # Curvature corrections on top of the thin-lens rule (scaled by s): the path-gap
+        # diagnostic showed the thin-lens manifold alone costs 3-7x in merit mid-morph.
+        z["dc1"] = jnp.zeros(n)
+        z["dc2"] = jnp.zeros(n)
     free = {k: True for k in z}
     for k, s in enumerate(np.linspace(0.0, 1.0, steps + 1)[1:], start=1):
         # The penalty acts on the *effective* aspheric phase (1-s)*b; dividing by
@@ -210,7 +223,8 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
         # factor s lets it start at zero so the first steps are gentle.
         mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
         cfg_kw = dict(s=s, beta=1.0, mu=mu, tmin=mech.tmin * s, emin=mech.emin * s,
-                      gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval)
+                      gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval,
+                      w_content=mech.w_content)
         cfg = make_cfg(**cfg_kw)
         z, _ = optimize(z, lay, spec, cfg, free, iters=iters, transform=morph_to_params)
         p = morph_to_params(z, cfg, lay)
@@ -219,7 +233,8 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
                 virtual_petzval, extra={"z": dict(z), "cfg": cfg_kw, "iters": iters})
     # polish as a plain glass system with independent curvatures
     free = {k: True for k in _glass_vars(lay)}
-    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax)
+    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
+                   w_content=mech.w_content)
     p, _ = optimize(p, lay, spec, cfg, free, iters=polish_iters)
     rec.add("materialize", steps + 1, p, lay, 1.0, f"all-glass polish  glasses {_glasses(p)}")
     return p, lay
@@ -228,7 +243,8 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
 def stage_catalog(p, lay: Layout, spec: Spec, rec: Recorder, candidates=2, iters=100,
                   mech=Mech(), pull=(1e-3, 1e-2, 1e-1)):
     free = {k: True for k in _glass_vars(lay)}
-    base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax)
+    base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
+                w_content=mech.w_content)
     for k, nu in enumerate(pull, start=1):
         p, _ = optimize(p, lay, spec, make_cfg(nu=nu, **base), free, iters=30)
         rec.add("catalog", k, p, lay, 1.0, f"glass pull nu={nu:.0e}  glasses {_glasses(p)}")
@@ -270,7 +286,8 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
     """
     # glasses stay at their catalog values here; the catalog stage runs afterwards
     free = {k: True for k in _glass_vars(lay) if k not in ("nd", "vd")}
-    base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax)
+    base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
+                w_content=mech.w_content)
     z = dict(p)
     for k, u in enumerate(np.linspace(0, 1, steps + 1)[1:], start=1):
         # penalty on the effective coefficients, scaled so it bounds the variable a

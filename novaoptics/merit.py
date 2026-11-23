@@ -16,6 +16,9 @@ triggers recompilation:
     tmax     maximum center thickness of elements      [mm]
     emin     minimum edge thickness of elements        [mm]
     gmin     minimum center/edge air space between elements [mm]
+    w_content  weight of per-element Seidel spherical aberration, coma and astigmatism
+             (d-line waves).  Pushes toward elements that are corrected on their own
+             instead of large contributions cancelling between elements.
     virtual_petzval  1 = account for the Petzval curvature that the ideal phase
              will acquire once it becomes glass.  A screen of power phi destined for
              glass of index n_d will add -phi/n_d of image-surface curvature, so the
@@ -49,6 +52,7 @@ DEFAULT_CFG = dict(
     w_dist=50.0,
     w_constraint=10.0,
     virtual_petzval=0.0,
+    w_content=0.0,
     bfd_min=5.0,
 )
 
@@ -144,6 +148,12 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
     r_asph = jnp.sqrt(cfg["mu_asph"]) * (
         params["asph"] * (params["nd"][:, None] - 1.0) / lam_mm).ravel()
 
+    # aberration content: per-element W040, W131, W222 (Seidel, d-line waves)
+    if layout.n_elem > 0:
+        from .diagnostics import element_waves
+
+        ew = element_waves(params, layout, spec, cfg["beta"])[:, :3]
+        r_content = jnp.sqrt(cfg["w_content"]) * ew.ravel()
     gdist = jnp.stack(
         [G.catalog_softmin_distance(params["nd"][i], params["vd"][i]) for i in range(layout.n_elem)]
     )
@@ -159,7 +169,8 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
     )
 
     return jnp.concatenate(
-        [r_wfe, r_spot, jnp.atleast_1d(r_efl), r_dist, r_cons, r_phase, r_asph, r_glass, r_gbounds]
+        [r_wfe, r_spot, jnp.atleast_1d(r_efl), r_dist, r_cons, r_phase, r_asph, r_content, r_glass,
+         r_gbounds]
     )
 
 
