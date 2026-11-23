@@ -138,6 +138,9 @@ def _pca_curve(params, i, gs):
 def index_at(params, i, wavelength, beta, layout):
     gs = getattr(layout, "glass", None)
     if gs is None:
+        reg = getattr(layout, "region", None)
+        if reg is not None and reg.h_coef is not None:
+            return normal_index(params["nd"][i], params["vd"][i], wavelength, beta, reg)
         return index(params["nd"][i], params["vd"][i], wavelength, beta)
     x = _pca_curve(params, i, gs)
     # wavelength may be traced (vmapped in the ray trace): interpolate on the grid,
@@ -145,6 +148,15 @@ def index_at(params, i, wavelength, beta, layout):
     n = jnp.interp(wavelength, jnp.asarray(gs.grid), x)
     nd = x[gs.grid_index(LAMBDA_D)]
     return nd + beta * (n - nd)
+
+
+def normal_index(nd, vd, wavelength, beta, gs):
+    """Continuous (n_d, V_d) glass with the catalog's normal-glass dispersion shape."""
+    from .catalog import normal_features
+
+    h = normal_features(jnp.atleast_1d(nd), jnp.atleast_1d(vd))[0] @ jnp.asarray(gs.h_coef)
+    hw = jnp.interp(wavelength, jnp.asarray(gs.grid), h)
+    return nd + beta * (nd - 1.0) / vd * hw
 
 
 def nd_vec(params, layout):
@@ -176,16 +188,20 @@ def resolve(params, layout):
 
 def space_distance(g, gs, temperature=0.05):
     """Smooth distance (normalized PCA units) from coordinates g to the nearest glass."""
+    import jax
+
     c = jnp.asarray(gs.coords / gs.scale)
     d = jnp.sqrt(jnp.sum((g[None, :] - c) ** 2, -1) + 1e-12)
-    return -temperature * jnp.log(jnp.sum(jnp.exp(-d / temperature)))
+    return -temperature * jax.nn.logsumexp(-d / temperature)
 
 
 def ndvd_hull_violation(nd, vd, gs, temperature=0.02):
     """Smooth distance outside the catalog's (n_d/0.1, V_d/10) convex hull."""
+    import jax
+
     H = jnp.asarray(gs.hull_ndvd)
     v = H[:, 0] * (nd / 0.1) + H[:, 1] * (vd / 10.0) + H[:, 2]
-    return temperature * jnp.log(jnp.sum(jnp.exp(v / temperature)))
+    return temperature * jax.nn.logsumexp(v / temperature)
 
 
 def hull_violation(g, gs, temperature=0.02):
@@ -195,6 +211,8 @@ def hull_violation(g, gs, temperature=0.02):
     is the distance to the hull (exact when the nearest point lies on a facet).  A
     soft maximum keeps it differentiable.
     """
+    import jax
+
     H = jnp.asarray(gs.hull)
     v = H[:, :-1] @ g + H[:, -1]
-    return temperature * jnp.log(jnp.sum(jnp.exp(v / temperature)))
+    return temperature * jax.nn.logsumexp(v / temperature)

@@ -211,12 +211,12 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
         rad = gs_radius(gs)
         gdist = jnp.stack([G.space_distance(params["g"][i], gs, temperature=0.25 * rad)
                            for i in range(layout.n_elem)])
-        if gs.hull is not None and gs.feas_radius is None:
-            # default: continuous glasses may lie anywhere inside the catalog's hull
-            hv = jnp.stack([G.hull_violation(params["g"][i], gs) for i in range(layout.n_elem)])
-            r_gbounds = wc * 10.0 * _hinge(hv)
-        else:
+        if gs.feas_radius is not None:
             r_gbounds = wc * _hinge(gdist - rad)
+        else:
+            # The pipeline never frees PCA coordinates (continuous glasses live in
+            # (n_d, V_d)); snapped glasses are real, so no feasibility term is needed.
+            r_gbounds = jnp.zeros(0)
     r_glass = jnp.sqrt(cfg["nu"]) * gdist
 
     return jnp.concatenate(

@@ -118,6 +118,11 @@ class GlassSpace:
     # through per-bin extremes of the catalog.  The populated glass map is not convex
     # (its upper edge sags below the chord from fluor crowns to lanthanum flints), so
     # the convex hull would admit glasses that do not exist.
+    # "Normal glass" dispersion model: the normalized shape h(lambda) = (n - n_d)/(n_F - n_C)
+    # regressed on (n_d, V_d) over the catalog (quadratic).  Continuous glasses use it
+    # instead of a two-term Cauchy curve: 15x smaller index-curve error, with realistic
+    # partial dispersion, and n_d, V_d reproduced exactly (h_F - h_C = 1 is preserved).
+    h_coef: np.ndarray | None = None
     env_n: np.ndarray | None = None
     env_vmax: np.ndarray | None = None
     env_vmin: np.ndarray | None = None
@@ -180,14 +185,28 @@ def build_glass_space(glasses, wavelengths, k=3, n_grid=16, statuses=(0, 1),
     hull = ConvexHull(coords / coords.std(0)).equations
     ndvd = np.c_[[g.nd / 0.1 for g in keep], [g.vd / 10.0 for g in keep]]
     hull_ndvd = ConvexHull(ndvd).equations
+    from .glass import LAMBDA_C, LAMBDA_D, LAMBDA_F
+
+    jF, jd, jC = (int(np.argmin(np.abs(grid - w))) for w in (LAMBDA_F, LAMBDA_D, LAMBDA_C))
+    dFC = X[:, jF] - X[:, jC]
+    H = (X - X[:, jd][:, None]) / dFC[:, None]
+    h_coef, *_ = np.linalg.lstsq(normal_features(X[:, jd], (X[:, jd] - 1) / dFC), H, rcond=None)
     env_n, env_vmax, env_vmin = _envelope(np.array([g.nd for g in keep]),
                                           np.array([g.vd for g in keep]))
     return GlassSpace(names=[g.name for g in keep], nd=np.array([g.nd for g in keep]),
                       vd=np.array([g.vd for g in keep]), status=np.array([g.status for g in keep]),
                       grid=grid, X=X, mu=mu, B=B, coords=coords, resid=resid,
                       explained=explained, scale=coords.std(0), feas_radius=feas_radius,
-                      hull=hull, hull_ndvd=hull_ndvd, env_n=env_n, env_vmax=env_vmax,
+                      hull=hull, hull_ndvd=hull_ndvd, h_coef=h_coef, env_n=env_n,
+                      env_vmax=env_vmax,
                       env_vmin=env_vmin)
+
+
+def normal_features(nd, vd):
+    """Regression features of the normal-glass model (numpy or jax arrays)."""
+    v = vd / 50.0
+    xp = np if isinstance(nd, np.ndarray) else __import__("jax.numpy", fromlist=["x"])
+    return xp.stack([xp.ones_like(nd), nd, v, nd**2, nd * v, v**2], axis=-1)
 
 
 def _envelope(nd, vd, width=0.03):

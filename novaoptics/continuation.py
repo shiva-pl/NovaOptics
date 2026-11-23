@@ -339,8 +339,12 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     top, nearest = [], []
     for i in range(n):
         Ji = J[:, i * k:(i + 1) * k]
-        pred = np.sum((r0[None, :] + (C - g0[i]) @ Ji.T) ** 2, axis=1)
-        dist = np.sum((C - g0[i]) ** 2, axis=1)
+        pred = np.nan_to_num(np.sum((r0[None, :] + (C - g0[i]) @ Ji.T) ** 2, axis=1),
+                             nan=np.inf)
+        # nearest = closest index curve (physical units); normalized PCA coordinates
+        # would magnify the tiny partial-dispersion axis
+        cur = gs.mu + gs.B @ (g0[i] * gs.scale) + np.asarray(p["gr"][i])
+        dist = np.sum((gs.X - cur) ** 2, axis=1)
         near = list(np.argsort(dist)[:top_m])
         nearest.append(near[0])
         # The linear prediction is reliable for small moves only, so the nearest
@@ -348,7 +352,7 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
         top.append(list(dict.fromkeys(list(np.argsort(pred)[:top_m]) + near)))
     combos = list(itertools.product(*top))
     D = np.array([np.concatenate([C[j] - g0[i] for i, j in enumerate(c)]) for c in combos])
-    pred = np.sum((r0[None, :] + D @ J.T) ** 2, axis=1)
+    pred = np.nan_to_num(np.sum((r0[None, :] + D @ J.T) ** 2, axis=1), nan=np.inf)
     order = list(np.argsort(pred)[:n_eval])
     o_near = combos.index(tuple(nearest))
     if o_near not in order:
@@ -399,7 +403,7 @@ def to_glass_space(p, lay: Layout, gs):
     q = dict(p)
     g, gr = [], []
     for i in range(lay.n_elem):
-        x = np.array([float(G.index(p["nd"][i], p["vd"][i], w, 1.0)) for w in gs.grid])
+        x = np.array([float(G.index_at(p, i, w, 1.0, lay)) for w in gs.grid])
         a = gs.project(x)
         g.append(a / gs.scale)
         gr.append(x - gs.mu - gs.B @ a)

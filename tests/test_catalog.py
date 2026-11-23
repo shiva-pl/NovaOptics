@@ -91,3 +91,22 @@ def test_pca_and_cauchy_agree_on_nd(space):
     q = dict(p, nd=jnp.array([1.5168]), vd=jnp.array([64.17]))
     assert float(A.paraxial_efl(p, lay_p, SPEC)) == pytest.approx(
         float(A.paraxial_efl(q, lay_c, SPEC)), rel=1e-5)
+
+
+def test_normal_glass_model_keeps_nd_vd_and_beats_cauchy(space):
+    """Continuous (n_d, V_d) glasses with the catalog's normal-glass dispersion."""
+    lay = Layout(n_elem=1, stop_index=0, region=space)
+    errs_normal, errs_cauchy = [], []
+    for j in range(0, len(space.names), 7):
+        x = space.X[j]
+        nd = x[space.grid_index(G.LAMBDA_D)]
+        vd = (nd - 1) / (x[space.grid_index(G.LAMBDA_F)] - x[space.grid_index(G.LAMBDA_C)])
+        p = {"nd": jnp.array([nd]), "vd": jnp.array([vd])}
+        n = np.array([float(G.index_at(p, 0, w, 1.0, lay)) for w in space.grid])
+        c = np.array([float(G.index(nd, vd, w, 1.0)) for w in space.grid])
+        assert n[space.grid_index(G.LAMBDA_D)] == pytest.approx(nd, abs=1e-12)
+        vfit = (nd - 1) / (n[space.grid_index(G.LAMBDA_F)] - n[space.grid_index(G.LAMBDA_C)])
+        assert vfit == pytest.approx(vd, rel=1e-9)
+        errs_normal.append(np.abs(n - x).max())
+        errs_cauchy.append(np.abs(c - x).max())
+    assert np.sqrt(np.mean(np.square(errs_normal))) < 0.2 * np.sqrt(np.mean(np.square(errs_cauchy)))
