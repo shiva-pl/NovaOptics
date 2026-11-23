@@ -87,7 +87,17 @@ stage**. They differ only in where optimization starts:
 Every result is judged on a **dense 21-point field grid** that no merit function
 sampled.
 
-RESULTS_TABLE
+| design | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [µm] | max distortion | wall time |
+|---|---|---|---|---|---|
+| phase-first, aspheric | 0.186 | 0.260 | 4.3 | 0.71% | 365 s |
+| conventional, aspheric | **0.157** | **0.235** | 4.1 | 0.77% | 74 s |
+| phase-first, spherical (asphere fade) | 0.344 | **0.444** | 7.6 | 0.87% | 121 s* |
+| conventional, spherical | **0.332** | 0.476 | 5.9 | 1.07% | 38 s |
+
+\* on top of the aspheric run. Times are on 4 CPU cores and include JIT compilation.
+Full prescriptions are in [`examples/output/results.md`](examples/output/results.md).
+
+![performance, spherical](examples/output/performance_spherical.png)
 
 ![performance, aspheric](examples/output/performance_aspheric.png)
 
@@ -95,7 +105,31 @@ RESULTS_TABLE
 
 ### What we learned (honest version)
 
-FINDINGS
+* **Without a starting design, the pipeline reaches the same quality class as
+  conventional multi-start from a known form.** It was within 0.03 waves on mean and
+  better on worst-field error for the spherical case. It did not beat it.
+  Conventional optimization from the *right* form (a Cooke triplet) is strong.
+  However, only 2 of 12 perturbed Cooke starts converged usefully, which shows how
+  much that form knowledge and that luck matter.
+* **It rediscovered the Cooke triplet.** The aspheric result is a `+−+` triplet
+  (N-LASF31A / N-SF11 / N-LASF31A) arrived at from a single ideal phase screen,
+  with no lens form given.
+* **Phase-space ranking is a filter, not an oracle.** `−++` ranked first in phase
+  space (0.13 waves) but materialized worse than `+−+`. Materializing the top two
+  architectures was necessary, and spherizing each one picked `+−+` again (0.37
+  vs 1.56 waves).
+* **The phase world must be told about glass.** Without virtual Petzval, three
+  ideal screens settle into a `0,+,+` solution that glass cannot realize.
+* **Homotopies need bounded, meaningful variables.** An unbounded bending
+  variable drifted to absurd values while glass carried little power and blew up
+  later. A penalty-only morph made power jump all at once instead of migrating.
+  Both are fixed in the reparameterization.
+* **Merit sampling loopholes are real.** With 3 field points the optimizer
+  overfit between fields. With 4 pupil rings and wavefront-only residuals,
+  high-order aspheres hid steep wavefront walls between rings: 0.12 waves "RMS"
+  but a 75 µm spot. The merit now uses 5 fields, 6 rings and transverse-ray
+  residuals, and every number above is judged on a denser 21-field × 8×16-pupil
+  grid.
 
 ## Layout
 
