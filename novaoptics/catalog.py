@@ -105,6 +105,22 @@ class GlassSpace:
     resid: np.ndarray  # [n_glass, n_grid] part of each glass outside span(B)
     explained: np.ndarray  # variance fraction per component (all components)
     scale: np.ndarray = field(default=None)  # per-coordinate std over the catalog
+    # Feasibility radius in normalized PCA units: continuous glasses may sit this far
+    # from the nearest catalog glass.  None -> FEAS_FACTOR x median neighbour spacing.
+    feas_radius: float | None = None
+    # Convex hull of the catalog in normalized PCA coordinates: rows (n, b) with
+    # n . x + b <= 0 inside (|n| = 1, so n . x + b is a signed facet distance).
+    hull: np.ndarray | None = None
+    # Convex hull of the catalog in the (n_d/0.1, V_d/10) glass map, same convention.
+    # Bounds continuous (n_d, V_d) glasses to the region real glasses occupy.
+    hull_ndvd: np.ndarray | None = None
+    # Non-convex glass-map envelope: V_min(n_d) <= V_d <= V_max(n_d), piecewise linear
+    # through per-bin extremes of the catalog.  The populated glass map is not convex
+    # (its upper edge sags below the chord from fluor crowns to lanthanum flints), so
+    # the convex hull would admit glasses that do not exist.
+    env_n: np.ndarray | None = None
+    env_vmax: np.ndarray | None = None
+    env_vmin: np.ndarray | None = None
 
     def __hash__(self):
         return id(self)
@@ -130,22 +146,58 @@ class GlassSpace:
         return self.names.index(name)
 
 
-def build_glass_space(glasses, wavelengths, k=3, n_grid=16, statuses=(0, 1)) -> GlassSpace:
+FEAS_FACTOR = 2.5
+
+
+def build_glass_space(glasses, wavelengths, k=3, n_grid=16, statuses=(0, 1),
+                      feas_radius=None) -> GlassSpace:
     """PCA of catalog indices over the band spanned by `wavelengths` (plus those exact
     wavelengths, so the design wavelengths are evaluated without interpolation)."""
     wl = np.asarray(wavelengths, dtype=float)
     lo, hi = wl.min(), wl.max()
     grid = np.unique(np.r_[np.linspace(lo, hi, n_grid), wl])
-    keep = [g for g in glasses if g.status in statuses and g.lmin <= lo + 1e-9
+    cand = [g for g in glasses if g.status in statuses and g.lmin <= lo + 1e-9
             and g.lmax >= hi - 1e-9]
-    X = np.array([g.index(grid) for g in keep])
+    # Drop optically identical entries (e.g. N-BK7 / N-BK7HT / N-BK7HTi: same glass,
+    # different transmission grade), keeping the shortest name.
+    cand.sort(key=lambda g: (len(g.name), g.name))
+    keep, curves = [], []
+    for g in cand:
+        x = g.index(grid)
+        if any(np.max(np.abs(x - y)) < 1e-7 for y in curves):
+            continue
+        keep.append(g)
+        curves.append(x)
+    X = np.array(curves)
     mu = X.mean(0)
     U, S, Vt = np.linalg.svd(X - mu, full_matrices=False)
     B = Vt[:k].T
     coords = (X - mu) @ B
     resid = X - mu - coords @ B.T
     explained = S**2 / np.sum(S**2)
+    from scipy.spatial import ConvexHull
+
+    hull = ConvexHull(coords / coords.std(0)).equations
+    ndvd = np.c_[[g.nd / 0.1 for g in keep], [g.vd / 10.0 for g in keep]]
+    hull_ndvd = ConvexHull(ndvd).equations
+    env_n, env_vmax, env_vmin = _envelope(np.array([g.nd for g in keep]),
+                                          np.array([g.vd for g in keep]))
     return GlassSpace(names=[g.name for g in keep], nd=np.array([g.nd for g in keep]),
                       vd=np.array([g.vd for g in keep]), status=np.array([g.status for g in keep]),
                       grid=grid, X=X, mu=mu, B=B, coords=coords, resid=resid,
-                      explained=explained, scale=coords.std(0))
+                      explained=explained, scale=coords.std(0), feas_radius=feas_radius,
+                      hull=hull, hull_ndvd=hull_ndvd, env_n=env_n, env_vmax=env_vmax,
+                      env_vmin=env_vmin)
+
+
+def _envelope(nd, vd, width=0.03):
+    """Per-bin V_d extremes along n_d (bins of `width`), as interpolation nodes."""
+    edges = np.arange(nd.min(), nd.max() + width, width)
+    n, vmax, vmin = [], [], []
+    for lo in edges:
+        m = (nd >= lo) & (nd < lo + width)
+        if m.any():
+            n.append(nd[m].mean())
+            vmax.append(vd[m].max())
+            vmin.append(vd[m].min())
+    return np.array(n), np.array(vmax), np.array(vmin)

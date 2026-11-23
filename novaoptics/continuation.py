@@ -131,8 +131,10 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
     negative ones as a flint (the usual achromat starting point); n_d and V_d are
     free from here on.
     """
+    # Continuous glasses stay in (n_d, V_d), which optimizes well; with a catalog its
+    # glass-map hull bounds them, and real glasses arrive by snapping after COLOR.
     lay = Layout(n_elem=n_elem, stop_index=stop_index, n_phase=lay0.n_phase, r_norm=lay0.r_norm,
-                 aspheres=aspheres, glass=glass)
+                 aspheres=aspheres, region=glass)
     gaps = np.full(n_elem, spacing)
     if 0 < stop_index < n_elem:
         gaps[stop_index] = 0.5  # stop just in front of element `stop_index`
@@ -141,10 +143,6 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
     p = new_params(lay, gaps=gaps, bfd=float(p0["bfd"]))
     p["nd"] = jnp.asarray(np.where(pattern > 0, 1.62, 1.62))
     p["vd"] = jnp.asarray(np.where(pattern > 0, 60.0, 36.0))
-    if glass is not None:
-        # nearest catalog crown / flint, as continuous coordinates (no off-span residual)
-        ids = [nearest_in_space(glass, 1.62, 60.0 if w > 0 else 36.0) for w in pattern]
-        set_glass(p, lay, list(range(n_elem)), ids, exact=False)
     # Split by optical power only: away from the stop the beam footprint exceeds the
     # region where the stage-0 polynomial was fitted, so its high orders would
     # extrapolate wildly.  The optimizer re-grows the aspheric orders it needs.
@@ -153,7 +151,7 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
             f"powers[1/m] {_powers(p['phase'], lay.r_norm)}", virtual_petzval)
     cfg = make_cfg(beta=0.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
                    w_content=mech.w_content)
-    free = {"phase": True, "gaps": True, "bfd": True, ("g" if glass is not None else "nd"): True}
+    free = {"phase": True, "gaps": True, "bfd": True, "nd": True}
     p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
     rec.add("distribute", 1, p, lay, 0.0,
             f"optimized w/ virtual Petzval  powers[1/m] {_powers(p['phase'], lay.r_norm)}",
@@ -265,6 +263,8 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
 
 def stage_catalog(p, lay: Layout, spec: Spec, rec: Recorder, candidates=2, iters=100,
                   mech=Mech(), pull=(1e-3, 1e-2, 1e-1)):
+    if lay.glass is None and lay.region is not None:
+        p, lay = to_glass_space(p, lay, lay.region)  # continuous (n_d, V_d) -> exact PCA
     if lay.glass is not None:
         cfg_kw = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
                       w_content=mech.w_content)
@@ -304,10 +304,11 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     Candidates are ranked by *predicted merit*, not by distance in the glass map:
     with residuals r and their Jacobian J with respect to the glass coordinates g,
     the cost after moving to catalog coordinates g + D is predicted as |r + J D|^2.
-    For each element the `top_m` best single moves are kept; every combination of
-    those is scored jointly with the same linear model, and the `n_eval` most
-    promising combinations are snapped exactly and re-optimized over `free_other`.
-    The current glasses, if they are catalog glasses, are among the candidates.
+    For each element the `top_m` best single moves and the `top_m` nearest glasses
+    are kept; every combination is scored jointly with the same linear model, and the
+    `n_eval` most promising combinations plus the all-nearest one are snapped exactly
+    and re-optimized over `free_other`.  (The prediction is only reliable for small
+    moves; the nearest glasses guard against it.)
     """
     from jax.flatten_util import ravel_pytree
 
@@ -325,15 +326,23 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     g0 = np.asarray(p["g"])
     C = gs.coords / gs.scale  # catalog coordinates [G, k]
 
-    top = []
+    top, nearest = [], []
     for i in range(n):
         Ji = J[:, i * k:(i + 1) * k]
         pred = np.sum((r0[None, :] + (C - g0[i]) @ Ji.T) ** 2, axis=1)
-        top.append(list(np.argsort(pred)[:top_m]))
+        dist = np.sum((C - g0[i]) ** 2, axis=1)
+        near = list(np.argsort(dist)[:top_m])
+        nearest.append(near[0])
+        # The linear prediction is reliable for small moves only, so the nearest
+        # glasses are always candidates alongside the best-predicted ones.
+        top.append(list(dict.fromkeys(list(np.argsort(pred)[:top_m]) + near)))
     combos = list(itertools.product(*top))
     D = np.array([np.concatenate([C[j] - g0[i] for i, j in enumerate(c)]) for c in combos])
     pred = np.sum((r0[None, :] + D @ J.T) ** 2, axis=1)
-    order = np.argsort(pred)[:n_eval]
+    order = list(np.argsort(pred)[:n_eval])
+    o_near = combos.index(tuple(nearest))
+    if o_near not in order:
+        order.append(o_near)  # always try the all-nearest combination too
 
     free = {v: True for v in free_other}
     best = None
@@ -350,6 +359,25 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     rec.add(label, 0, best[1], lay, cfg_kw.get("beta", 1.0), f"snapped to {best[2]}",
             virtual_petzval)
     return best[1], lay
+
+
+def to_glass_space(p, lay: Layout, gs):
+    """Re-express (n_d, V_d) Cauchy glasses exactly in a PCA glass space.
+
+    Each element's Cauchy index curve on the glass-space grid is projected onto the
+    principal directions (g) and the remainder kept as the fixed residual (gr), so the
+    optical system is unchanged; afterwards the glasses can be snapped to the catalog.
+    """
+    lay_g = dataclasses.replace(lay, glass=gs)
+    q = dict(p)
+    g, gr = [], []
+    for i in range(lay.n_elem):
+        x = np.array([float(G.index(p["nd"][i], p["vd"][i], w, 1.0)) for w in gs.grid])
+        a = gs.project(x)
+        g.append(a / gs.scale)
+        gr.append(x - gs.mu - gs.B @ a)
+    q["g"], q["gr"] = jnp.asarray(np.array(g)), jnp.asarray(np.array(gr))
+    return q, lay_g
 
 
 def fade_aspheres(z, cfg, layout: Layout):
@@ -397,7 +425,8 @@ PATTERNS = {
 
 
 def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1, mech=Mech(),
-                          virtual_petzval=1.0, verbose=True, aspheres=False, glass=None):
+                          virtual_petzval=1.0, verbose=True, aspheres=False, glass=None,
+                          snap="early"):
     """Run DISTRIBUTE + COLOR for several power patterns: cheap, all in phase space."""
     results = []
     for name, pat in patterns.items():
@@ -408,9 +437,10 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
                                   mech=mech, virtual_petzval=virtual_petzval, pattern=pat,
                                   aspheres=aspheres, glass=glass)
         p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
-        if glass is not None:
+        if glass is not None and snap == "early":
             # snap to real glasses while still in phase space: cheap, and the
             # architecture ranking then reflects glasses that actually exist
+            p, lay = to_glass_space(p, lay, glass)
             cfg_kw = dict(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
                           w_content=mech.w_content)
             p, lay = stage_snap(p, lay, spec, rec, cfg_kw, ("phase", "gaps", "bfd"),
@@ -422,17 +452,20 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 
 
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
-                      patterns=PATTERNS, top_k=2, aspheres=False, glass=None, verbose=True):
+                      patterns=PATTERNS, top_k=2, aspheres=False, glass=None, snap="early",
+                      morph_iters=30, verbose=True):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
-    `glass`: a catalog.GlassSpace for real catalog glasses in PCA coordinates
-    (snapped in phase space, fixed through the morph, re-checked at the end);
-    None keeps the continuous (n_d, V_d) Cauchy model with a late snap.
+    `glass`: a catalog.GlassSpace of real catalog glasses.  Continuous stages use
+    (n_d, V_d) bounded by the catalog's glass-map hull.  snap="early" snaps to exact
+    catalog glasses in phase space after COLOR and keeps them fixed through the morph
+    (re-checked at the end); snap="late" keeps glasses continuous through the morph and
+    snaps once at the end.  glass=None: the built-in small (n_d, V_d) list.
     """
     rec0 = Recorder(spec, verbose=verbose)
     p0, lay0 = stage_ideal(spec, rec0)
     archs = explore_architectures(p0, lay0, spec, patterns, stop_index, mech, virtual_petzval,
-                                  verbose, aspheres, glass)
+                                  verbose, aspheres, glass, snap)
     if verbose:
         print("phase-space ranking:", ", ".join(f"{a['name']} {a['score']:.3f}" for a in archs))
     finals = []
@@ -442,7 +475,7 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         rec = a["rec"]
         rec.snaps[:0] = rec0.snaps
         p, lay = stage_materialize(a["params"], a["layout"], spec, rec, mech=mech,
-                                   virtual_petzval=virtual_petzval)
+                                   virtual_petzval=virtual_petzval, iters=morph_iters)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
         finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
     finals.sort(key=lambda f: f[0])

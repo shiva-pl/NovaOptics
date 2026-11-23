@@ -57,13 +57,38 @@ DEFAULT_CFG = dict(
 )
 
 
+def region_violation(params, layout):
+    """Hinges keeping (n_d, V_d) glasses where real glasses exist.
+
+    With `layout.region` (a GlassSpace) this is the convex hull of that catalog in the
+    glass map; otherwise the built-in approximate outline (`glass.glass_region_violation`).
+    """
+    if layout.region is not None:
+        # Convex hull of the catalog in the glass map.  It slightly over-includes (the
+        # populated map is not convex), but it is smooth; the non-convex per-bin
+        # envelope (GlassSpace.env_*) traps the continuous optimization at its kinks.
+        hv = jnp.stack([G.ndvd_hull_violation(params["nd"][i], params["vd"][i], layout.region)
+                        for i in range(layout.n_elem)])
+        return (10.0 * _hinge(hv),)
+    return tuple(v / 5 for v in G.glass_region_violation(params["nd"], params["vd"]))
+
+
 def gs_radius(gs):
-    """Feasibility radius of a glass space: median nearest-neighbour spacing."""
+    """Feasibility radius of a glass space (normalized PCA units).
+
+    A radius of one median neighbour spacing turns the feasible set into a scatter of
+    small balls around individual glasses and traps the continuous optimization;
+    the default lets continuous glasses interpolate between neighbouring catalog glasses.
+    """
+    from .catalog import FEAS_FACTOR
+
+    if gs.feas_radius is not None:
+        return gs.feas_radius
     if not hasattr(gs, "_radius"):
         c = gs.coords / gs.scale
         d = np.sqrt(((c[:, None, :] - c[None, :, :]) ** 2).sum(-1))
         np.fill_diagonal(d, np.inf)
-        gs._radius = float(np.median(d.min(1)))
+        gs._radius = FEAS_FACTOR * float(np.median(d.min(1)))
     return gs._radius
 
 
@@ -174,15 +199,22 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
                 _hinge(params["nd"] - G.ND_BOUNDS[1]) * 10,
                 _hinge(G.VD_BOUNDS[0] - params["vd"]) / 10,
                 _hinge(params["vd"] - G.VD_BOUNDS[1]) / 10,
-                *(v / 5 for v in G.glass_region_violation(params["nd"], params["vd"])),
+                *(region_violation(params, layout)),
             ]
         )
     else:
         # PCA glass space: stay within the catalog's footprint.  Distances are in
-        # normalized PCA units; beyond the typical neighbour spacing the penalty acts.
+        # normalized PCA units; beyond the feasibility radius the penalty acts.
         gs = layout.glass
-        gdist = jnp.stack([G.space_distance(params["g"][i], gs) for i in range(layout.n_elem)])
-        r_gbounds = wc * _hinge(gdist - gs_radius(gs))
+        rad = gs_radius(gs)
+        gdist = jnp.stack([G.space_distance(params["g"][i], gs, temperature=0.25 * rad)
+                           for i in range(layout.n_elem)])
+        if gs.hull is not None and gs.feas_radius is None:
+            # default: continuous glasses may lie anywhere inside the catalog's hull
+            hv = jnp.stack([G.hull_violation(params["g"][i], gs) for i in range(layout.n_elem)])
+            r_gbounds = wc * 10.0 * _hinge(hv)
+        else:
+            r_gbounds = wc * _hinge(gdist - rad)
     r_glass = jnp.sqrt(cfg["nu"]) * gdist
 
     return jnp.concatenate(

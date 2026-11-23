@@ -44,6 +44,7 @@ class Layout:
     z_launch: float = -20.0  # launch plane for rays, in front of the first item
     aspheres: bool = False  # even aspheric terms (orders 4..2*n_phase) on rear surfaces
     glass: object = None  # catalog.GlassSpace -> PCA glass coordinates; None -> (n_d, V_d)
+    region: object = None  # catalog.GlassSpace whose (n_d, V_d) hull bounds Cauchy glasses
 
     def items(self):
         """Sequence of items: element indices and the string 'stop'."""

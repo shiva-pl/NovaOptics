@@ -34,7 +34,7 @@ def cooke_start(lay: Layout, spec: Spec, rng, spread=0.3):
     dc = phis / (nd - 1)
     p.update(c1=jnp.asarray(0.5 * (1 + X) * dc), c2=jnp.asarray(0.5 * (X - 1) * dc),
              t=jnp.full(3, 4.0), nd=jnp.asarray(nd), vd=jnp.asarray(vd))
-    if lay.glass is not None:
+    if lay.glass is not None:  # exact catalog glasses
         gs = lay.glass
         ids = [gs.find(n) if n in gs.names else nearest_in_space(gs, a, b)
                for n, (a, b) in zip(("N-SK16", "F2", "N-SK16"), zip(nd, vd))]
@@ -44,7 +44,13 @@ def cooke_start(lay: Layout, spec: Spec, rng, spread=0.3):
 
 def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech=Mech(),
                  iters=200, seed=0, verbose=True, glass=None):
-    lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres, glass=glass)
+    # Same glass handling as the phase-first pipeline: free glasses are continuous
+    # (n_d, V_d) bounded by the catalog's glass-map hull and snapped at the end; fixed
+    # glasses are the exact catalog SK16 / F2 / SK16.
+    if glass is not None and free_glass:
+        lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres, region=glass)
+    else:
+        lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres, glass=glass)
     rng = np.random.default_rng(seed)
     cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
                    w_content=mech.w_content)

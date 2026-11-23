@@ -357,8 +357,8 @@ def path_gap(snap, spec: Spec, iters=300):
     * `converged`: same parameterization, many more iterations.  The gap between the
       recorded and converged merit is lack of convergence along the path.
     * `free_curvature`: also frees independent curvature corrections dc1, dc2 on top
-      of the thin-lens rule.  The extra drop measures how restrictive the morph
-      parameterization is.
+      of the thin-lens rule (if the morph does not already carry them).  The extra
+      drop measures how restrictive the morph parameterization is.
 
     Merit values are the optimizer's cost (sum of squared residuals) and the mean
     polychromatic RMS wavefront error on the snapshot's design image surface.
@@ -381,8 +381,12 @@ def path_gap(snap, spec: Spec, iters=300):
     z1, _ = optimize(dict(z0), lay, spec, cfg, {k: True for k in z0}, iters=iters,
                      transform=morph_to_params)
     out["converged"] = measure(z1)
-    z2 = dict(z1, dc1=jnp.zeros(lay.n_elem), dc2=jnp.zeros(lay.n_elem))
-    z2, _ = optimize(z2, lay, spec, cfg, {k: True for k in z2}, iters=iters,
-                     transform=morph_to_params)
-    out["free_curvature"] = measure(z2)
+    if "dc1" in z1:
+        # the morph already carries free curvature corrections: nothing to add
+        out["free_curvature"] = out["converged"]
+    else:
+        z2 = dict(z1, dc1=jnp.zeros(lay.n_elem), dc2=jnp.zeros(lay.n_elem))
+        z2, _ = optimize(z2, lay, spec, cfg, {k: True for k in z2}, iters=iters,
+                         transform=morph_to_params)
+        out["free_curvature"] = measure(z2)
     return out

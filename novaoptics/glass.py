@@ -174,3 +174,22 @@ def space_distance(g, gs, temperature=0.05):
     c = jnp.asarray(gs.coords / gs.scale)
     d = jnp.sqrt(jnp.sum((g[None, :] - c) ** 2, -1) + 1e-12)
     return -temperature * jnp.log(jnp.sum(jnp.exp(-d / temperature)))
+
+
+def ndvd_hull_violation(nd, vd, gs, temperature=0.02):
+    """Smooth distance outside the catalog's (n_d/0.1, V_d/10) convex hull."""
+    H = jnp.asarray(gs.hull_ndvd)
+    v = H[:, 0] * (nd / 0.1) + H[:, 1] * (vd / 10.0) + H[:, 2]
+    return temperature * jnp.log(jnp.sum(jnp.exp(v / temperature)))
+
+
+def hull_violation(g, gs, temperature=0.02):
+    """Smooth distance outside the catalog's convex hull (normalized PCA units).
+
+    Inside the hull every facet distance n.x + b is negative; outside, the largest one
+    is the distance to the hull (exact when the nearest point lies on a facet).  A
+    soft maximum keeps it differentiable.
+    """
+    H = jnp.asarray(gs.hull)
+    v = H[:, :-1] @ g + H[:, -1]
+    return temperature * jnp.log(jnp.sum(jnp.exp(v / temperature)))
