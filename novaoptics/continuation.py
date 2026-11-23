@@ -214,7 +214,13 @@ def morph_to_params(z, cfg, layout: Layout):
 
 def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters=30,
                       mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80,
-                      free_curvature=True):
+                      free_curvature=True, glass_pull=0.0):
+    """Morph phase into glass (see `morph_to_params`).
+
+    glass_pull > 0 (continuous glasses only): the pull toward real catalog glasses
+    ramps up with the morph, nu = glass_pull * s^2, so glass discreteness is turned on
+    gradually while the lens takes shape and the final snap is a small step.
+    """
     n = lay.n_elem
     z = {
         "phi": -2.0 * p["phase"][:, 0] / lay.r_norm**2,
@@ -244,7 +250,7 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
         mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
         cfg_kw = dict(s=s, beta=1.0, mu=mu, tmin=mech.tmin * s, emin=mech.emin * s,
                       gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval,
-                      w_content=mech.w_content)
+                      w_content=mech.w_content, nu=glass_pull * s**2)
         cfg = make_cfg(**cfg_kw)
         z, _ = optimize(z, lay, spec, cfg, free, iters=iters, transform=morph_to_params)
         p = morph_to_params(z, cfg, lay)
@@ -477,14 +483,15 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
                       patterns=PATTERNS, top_k=2, aspheres=False, glass=None, snap="early",
-                      morph_iters=30, verbose=True):
+                      morph_iters=30, glass_pull=0.1, verbose=True):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
     `glass`: a catalog.GlassSpace of real catalog glasses.  Continuous stages use
     (n_d, V_d) bounded by the catalog's glass-map hull.  snap="early" snaps to exact
     catalog glasses in phase space after COLOR and keeps them fixed through the morph
     (re-checked at the end); snap="late" keeps glasses continuous through the morph and
-    snaps once at the end.  glass=None: the built-in small (n_d, V_d) list.
+    snaps once at the end; snap="gradual" is "late" plus a pull toward real glasses
+    that ramps up during the morph.  glass=None: the built-in small (n_d, V_d) list.
     """
     rec0 = Recorder(spec, verbose=verbose)
     p0, lay0 = stage_ideal(spec, rec0)
@@ -499,7 +506,8 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         rec = a["rec"]
         rec.snaps[:0] = rec0.snaps
         p, lay = stage_materialize(a["params"], a["layout"], spec, rec, mech=mech,
-                                   virtual_petzval=virtual_petzval, iters=morph_iters)
+                                   virtual_petzval=virtual_petzval, iters=morph_iters,
+                                   glass_pull=glass_pull if snap == "gradual" else 0.0)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
         finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
     finals.sort(key=lambda f: f[0] if np.isfinite(f[0]) else np.inf)
