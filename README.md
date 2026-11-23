@@ -131,6 +131,58 @@ Full prescriptions are in [`examples/output/results.md`](examples/output/results
   residuals, and every number above is judged on a denser 21-field × 8×16-pupil
   grid.
 
+## Diagnostics
+
+`novaoptics.diagnostics` explains *why* a design performs as it does:
+
+* **Seidel and primary-color contributions per surface** from a paraxial trace,
+  including fourth-order aspheres and ideal phase screens through the Sweatt model.
+  On a curved substrate the Sweatt lens needs a normal-path correction. These are
+  validated against real-ray wavefront fits in `tests/test_diagnostics.py`.
+* **Exact paraxial color** (all orders in Δn) next to the first-order C_I, C_II.
+  In corrected designs the first-order values can be off by ~15%, because the
+  total is a small difference of large terms.
+* **Real-ray Hopkins fit** through fifth order, per wavelength.
+* **Aberration content**: Σ|surface contribution| per term, i.e. how much
+  aberration a design cancels rather than avoids.
+* **Morph path gap**: re-optimizes recorded morph states to convergence, and with
+  free curvature corrections.
+
+`python examples/diagnose.py` writes [`examples/output/diagnostics/report.md`](examples/output/diagnostics/report.md).
+What it showed:
+
+| spherical designs | phase-first | conventional |
+|---|---|---|
+| Σ\|W040\| over surfaces | 140 waves | 42 |
+| Σ\|W131\| over surfaces | 520 | 258 |
+| real-ray W040 / W060 | +6.7 / −3.2 | +2.1 / −0.9 |
+| exact axial color F−C | −151 µm | −44 µm |
+
+* The phase-first spherical design **cancels about 3× more spherical aberration and
+  2× more coma**, and balances leftover high-order spherical aberration and axial
+  color with defocus. That is why its field curves sit about 0.3 mm behind the
+  image plane at every field. The conventional Cooke corrects coma element by
+  element (< 15 waves each). The phase-first design cancels −130 / +185 / −50 waves
+  between elements, which predicts much tighter tolerances.
+* **The cancellation is created in phase space.** Coma and astigmatism content
+  is already 500–1000 waves at the distribute stage, because free aspheric phase
+  lets each screen carry large compensating aberrations at no cost.
+* **The morph is limited by its parameterization, not by convergence.** Running
+  to convergence changes the path merit by < 1%. Adding free curvature
+  corrections lowers it 3–7× (0.355 → 0.051 waves at s = 0.5, 0.663 → 0.168 at
+  s = 1):
+
+| s | recorded | converged | + free curvature |
+|---|---|---|---|
+| 0.25 | 0.187 | 0.186 | 0.167 |
+| 0.50 | 0.355 | 0.352 | 0.051 |
+| 0.75 | 0.608 | 0.608 | 0.207 |
+| 1.00 | 0.663 | 0.665 | 0.168 |
+
+![element contributions](examples/output/diagnostics/seidel_elements.png)
+
+![morph diagnostics](examples/output/diagnostics/morph_seidel.png)
+
 ## Layout
 
 ```
@@ -139,12 +191,14 @@ novaoptics/
   system.py        Layout / Spec / parameter pytree, prescription printout
   trace.py         differentiable ray tracer: sphere + asphere + phase interface
   analysis.py      wavefront error, spot, EFL, distortion, AD field curves
+  diagnostics.py   Seidel/color contributions, real-ray fits, aberration content, path gap
   merit.py         residual vector with continuation knobs (beta, s, mu, nu, ...)
   optimize.py      Levenberg-Marquardt with exact JAX Jacobians
   continuation.py  the pipeline stages and architecture search
   baseline.py      conventional multi-start baseline
   plot.py          layouts, film strips, merit trajectory, performance plots
 examples/design_triplet.py   runs everything, writes examples/output/
+examples/diagnose.py         diagnostics report and figures
 tests/                       physics and gradient checks
 ```
 

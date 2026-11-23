@@ -164,8 +164,10 @@ def plot_morph(traj, gaps, path):
         if i == len(stages) or stages[i] != stages[start]:
             for ax in (a1, a2):
                 ax.axvline(start - 0.5, color=MUTED, lw=0.6, ls=":")
-            a1.text((start + i - 1) / 2, 1.02, stages[start], transform=a1.get_xaxis_transform(),
-                    ha="center", va="bottom", fontsize=7.5, color=MUTED)
+            nth = len(set(stages[:start]))
+            a1.text((start + i - 1) / 2, 1.02 + 0.06 * (nth % 2), stages[start],
+                    transform=a1.get_xaxis_transform(), ha="center", va="bottom",
+                    fontsize=7.5, color=MUTED)
             start = i
     fig.tight_layout()
     fig.savefig(path, dpi=160, facecolor=SURFACE)
@@ -181,6 +183,9 @@ def main(designs_only=False):
                   spec, OUT / "seidel_elements.png")
     if not designs_only:
         traj, gaps, info = morph_diagnostics(spec)
+        (OUT / "morph.json").write_text(json.dumps(
+            {"traj": [{k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in t.items()}
+                      for t in traj], "gaps": gaps}, indent=1))
         plot_morph(traj, gaps, OUT / "morph_seidel.png")
         report += "\n## Morph path gaps\n\n| s | recorded | converged | + free curvature |\n" \
                   "|---|---|---|---|\n" + "\n".join(
