@@ -49,6 +49,7 @@ class Snapshot:
     rms_wfe: np.ndarray
     efl: float
     note: str = ""
+    extra: dict = field(default_factory=dict)  # e.g. morph design variables and cfg
 
 
 @dataclass
@@ -57,13 +58,13 @@ class Recorder:
     snaps: list = field(default_factory=list)
     verbose: bool = True
 
-    def add(self, stage, step, params, layout, beta, note="", virtual_petzval=0.0):
+    def add(self, stage, step, params, layout, beta, note="", virtual_petzval=0.0, extra=None):
         # Phase stages are judged on the image surface they are designed for: the
         # flat sensor, pre-curved by the Petzval their phase will acquire as glass.
         c_img = virtual_petzval * float(virtual_petzval_curvature(params, layout))
         s = A.summary(params, layout, self.spec, beta, c_img=c_img)
         snap = Snapshot(stage, step, params, layout, float(beta), s["mean_wfe"], s["rms_wfe"],
-                        s["efl"], note)
+                        s["efl"], note, dict(extra or {}, virtual_petzval=virtual_petzval))
         self.snaps.append(snap)
         if self.verbose:
             wf = " ".join(f"{w:6.3f}" for w in s["rms_wfe"])
@@ -173,6 +174,10 @@ def morph_to_params(z, cfg, layout: Layout):
     X = X_MAX * jnp.tanh(z["xi"])
     c1 = 0.5 * (1.0 + X) * dc
     c2 = 0.5 * (X - 1.0) * dc
+    if "dc1" in z:
+        # optional curvature corrections beyond the thin-lens rule (thick-lens effects)
+        c1 = c1 + s * z["dc1"]
+        c2 = c2 + s * z["dc2"]
     a1 = -(1.0 - s) * z["phi"] * layout.r_norm**2 / 2.0
     phase = jnp.concatenate([a1[:, None], (1.0 - s) * z["bhi"]], axis=1)
     if layout.aspheres:
@@ -204,13 +209,14 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
         # (1-s)^2 keeps b itself bounded so it cannot blow up as s -> 1, and the
         # factor s lets it start at zero so the first steps are gentle.
         mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
-        cfg = make_cfg(s=s, beta=1.0, mu=mu, tmin=mech.tmin * s, emin=mech.emin * s,
-                       gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval)
+        cfg_kw = dict(s=s, beta=1.0, mu=mu, tmin=mech.tmin * s, emin=mech.emin * s,
+                      gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval)
+        cfg = make_cfg(**cfg_kw)
         z, _ = optimize(z, lay, spec, cfg, free, iters=iters, transform=morph_to_params)
         p = morph_to_params(z, cfg, lay)
         powers = " ".join(f"{float(v) * 1e3:+6.1f}" for v in z["phi"])
         rec.add("materialize", k, p, lay, 1.0, f"s={s:.2f}  powers[1/m] {powers}",
-                virtual_petzval)
+                virtual_petzval, extra={"z": dict(z), "cfg": cfg_kw, "iters": iters})
     # polish as a plain glass system with independent curvatures
     free = {k: True for k in _glass_vars(lay)}
     cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax)
