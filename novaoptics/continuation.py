@@ -264,6 +264,10 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
 def stage_catalog(p, lay: Layout, spec: Spec, rec: Recorder, candidates=2, iters=100,
                   mech=Mech(), pull=(1e-3, 1e-2, 1e-1)):
     if lay.glass is None and lay.region is not None:
+        base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
+                    w_content=mech.w_content)
+        p = pull_to_catalog(p, lay, spec, rec, base, {k: True for k in _glass_vars(lay)},
+                            "catalog", pulls=pull)
         p, lay = to_glass_space(p, lay, lay.region)  # continuous (n_d, V_d) -> exact PCA
     if lay.glass is not None:
         cfg_kw = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
@@ -351,14 +355,31 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
         q = set_glass(dict(p), lay, list(range(n)), list(combo), exact=True)
         q, _ = optimize(q, lay, spec, cfg, free, iters=iters)
         cost = float(np.sum(np.asarray(residuals(q, lay, spec, cfg)) ** 2))
+        if not np.isfinite(cost):
+            cost = np.inf  # failed re-optimization (ray failures): never selected
         names = "/".join(gs.names[j] for j in combo)
         if rec.verbose:
             print(f"      {label}: {names:<34} predicted {pred[o]:.4g}  after re-opt {cost:.4g}")
         if best is None or cost < best[0]:
             best = (cost, q, names)
+    if not np.isfinite(best[0]):
+        raise RuntimeError(f"{label}: every snapped glass combination failed to re-optimize")
     rec.add(label, 0, best[1], lay, cfg_kw.get("beta", 1.0), f"snapped to {best[2]}",
             virtual_petzval)
     return best[1], lay
+
+
+def pull_to_catalog(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free, label,
+                    pulls=(1e-3, 1e-2, 1e-1), iters=30, virtual_petzval=0.0):
+    """Gradually pull continuous (n_d, V_d) glasses toward the catalog's real glasses
+    (softmin distance, weight ramped by `pulls`) while re-optimizing everything else,
+    so that the exact snap that follows is a small step, not a jump."""
+    free = dict(free, nd=True, vd=True)
+    for k, nu in enumerate(pulls, start=1):
+        p, _ = optimize(p, lay, spec, make_cfg(nu=nu, **cfg_kw), free, iters=iters)
+        rec.add(label, k, p, lay, cfg_kw.get("beta", 1.0),
+                f"glass pull nu={nu:.0e}  glasses {_glasses(p)}", virtual_petzval)
+    return p
 
 
 def to_glass_space(p, lay: Layout, gs):
@@ -440,9 +461,12 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
         if glass is not None and snap == "early":
             # snap to real glasses while still in phase space: cheap, and the
             # architecture ranking then reflects glasses that actually exist
-            p, lay = to_glass_space(p, lay, glass)
             cfg_kw = dict(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
                           w_content=mech.w_content)
+            p = pull_to_catalog(p, lay, spec, rec, cfg_kw,
+                                {"phase": True, "gaps": True, "bfd": True}, "glass-pull",
+                                virtual_petzval=virtual_petzval)
+            p, lay = to_glass_space(p, lay, glass)
             p, lay = stage_snap(p, lay, spec, rec, cfg_kw, ("phase", "gaps", "bfd"),
                                 "glass-snap", virtual_petzval=virtual_petzval)
         results.append({"name": name, "params": p, "layout": lay, "rec": rec,
@@ -478,7 +502,7 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
                                    virtual_petzval=virtual_petzval, iters=morph_iters)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
         finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
-    finals.sort(key=lambda f: f[0])
+    finals.sort(key=lambda f: f[0] if np.isfinite(f[0]) else np.inf)
     score, name, p, lay, rec = finals[0]
     info = {"architectures": [(a["name"], a["score"]) for a in archs],
             "finals": [(f[1], f[0]) for f in finals], "chosen": name,

@@ -93,10 +93,15 @@ def glass_distance(nd, vd, nd_c, vd_c):
     return jnp.sqrt(((nd - nd_c) / 0.1) ** 2 + ((vd - vd_c) / 10.0) ** 2 + 1e-12)
 
 
-def catalog_softmin_distance(nd, vd, temperature=0.05):
-    """Smooth distance from (nd, vd) to the nearest catalog glass."""
-    _, arr = _catalog_arrays()
-    d = glass_distance(nd, vd, arr[:, 0], arr[:, 1])
+def catalog_softmin_distance(nd, vd, temperature=0.05, points=None):
+    """Smooth distance from (nd, vd) to the nearest catalog glass.
+
+    `points`: (n_d array, V_d array) of another catalog; default the built-in list.
+    """
+    if points is None:
+        _, arr = _catalog_arrays()
+        points = (arr[:, 0], arr[:, 1])
+    d = glass_distance(nd, vd, jnp.asarray(points[0]), jnp.asarray(points[1]))
     return -temperature * jnp.log(jnp.sum(jnp.exp(-d / temperature)))
 
 

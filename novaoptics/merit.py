@@ -191,7 +191,9 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
         ew = element_waves(params, layout, spec, cfg["beta"])[:, :3]
         r_content = jnp.sqrt(cfg["w_content"]) * ew.ravel()
     if layout.glass is None:
-        gdist = jnp.stack([G.catalog_softmin_distance(params["nd"][i], params["vd"][i])
+        pts = None if layout.region is None else (layout.region.nd, layout.region.vd)
+        gdist = jnp.stack([G.catalog_softmin_distance(params["nd"][i], params["vd"][i],
+                                                      points=pts)
                            for i in range(layout.n_elem)])
         r_gbounds = wc * jnp.concatenate(
             [
