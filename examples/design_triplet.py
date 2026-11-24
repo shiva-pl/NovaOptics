@@ -95,7 +95,7 @@ def main(quick=False):
     for asph in (True, False):
         t = time.time()
         pc, layc, cinfo = conventional(spec, n_starts=n_starts, aspheres=asph, free_glass=True,
-                                       glass=glass,
+                                       glass=glass, stop_shift=asph,
                                        verbose=False)
         kind = "aspheric" if asph else "spherical"
         record(f"conventional, {kind}", pc, layc, time.time() - t,

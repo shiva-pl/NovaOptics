@@ -43,7 +43,9 @@ def cooke_start(lay: Layout, spec: Spec, rng, spread=0.3):
 
 
 def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech=Mech(),
-                 iters=200, seed=0, verbose=True, glass=None):
+                 iters=200, seed=0, verbose=True, glass=None, stop_shift=False):
+    """Best of `n_starts` Cooke-type starts; then optionally a stop shift on the glass
+    system (as for the phase-first pipeline) and the catalog stage."""
     # Same glass handling as the phase-first pipeline: free glasses are continuous
     # (n_d, V_d) bounded by the catalog's glass-map hull and snapped at the end; fixed
     # glasses are the exact catalog SK16 / F2 / SK16.
@@ -69,6 +71,10 @@ def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech
     best = min(runs, key=lambda r: r["score"])
     p = best["params"]
     rec = Recorder(spec, verbose=verbose)
+    if stop_shift and np.isfinite(best["score"]):
+        from .continuation import stage_stop_shift
+
+        p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech, phase=False)
     if free_glass:
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
     else:
