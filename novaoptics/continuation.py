@@ -268,7 +268,7 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
 
 
 def stage_catalog(p, lay: Layout, spec: Spec, rec: Recorder, candidates=2, iters=100,
-                  mech=Mech(), pull=(1e-3, 1e-2, 1e-1)):
+                  mech=Mech(), pull=(1e-3, 1e-2, 1e-1, 1.0, 10.0)):
     if lay.glass is None and lay.region is not None:
         base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
                     w_content=mech.w_content)
@@ -373,7 +373,12 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
         if best is None or cost < best[0]:
             best = (cost, q, names)
     if not np.isfinite(best[0]):
-        raise RuntimeError(f"{label}: every snapped glass combination failed to re-optimize")
+        # Every candidate failed to re-optimize (ray failures).  Keep the input design
+        # and say so; the caller sees it in the recorder and the prescription labels.
+        rec.add(label, 0, p, lay, cfg_kw.get("beta", 1.0),
+                "SNAP FAILED: every candidate combination failed to re-optimize; "
+                "glasses left unsnapped", virtual_petzval)
+        return p, lay
     rec.add(label, 0, best[1], lay, cfg_kw.get("beta", 1.0), f"snapped to {best[2]}",
             virtual_petzval)
     return best[1], lay
@@ -390,6 +395,12 @@ def pull_to_catalog(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, fre
         rec.add(label, k, p, lay, cfg_kw.get("beta", 1.0),
                 f"glass pull nu={nu:.0e}  glasses {_glasses(p)}", virtual_petzval)
     return p
+
+
+def from_glass_space(p, lay: Layout):
+    """Exact PCA glasses -> continuous (n_d, V_d) normal-glass model of the same catalog."""
+    q = dict(p, nd=G.nd_vec(p, lay), vd=G.vd_vec(p, lay))
+    return q, dataclasses.replace(lay, glass=None, region=lay.glass)
 
 
 def to_glass_space(p, lay: Layout, gs):
@@ -426,7 +437,11 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
     the aspheric departure shrinks; a penalty on the *unscaled* coefficients keeps
     them from inflating to compensate.
     """
-    # glasses stay at their catalog values here; the catalog stage runs afterwards
+    if lay.glass is not None:
+        # Exact catalog glasses -> continuous normal-glass (n_d, V_d) (index-curve error
+        # ~1e-5), so the final catalog stage can pull and re-snap after the aspheres go.
+        p, lay = from_glass_space(p, lay)
+    # glasses stay fixed during the fade; the catalog stage runs afterwards
     free = {k: True for k in _glass_vars(lay, glass=False)}
     base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
                 w_content=mech.w_content)

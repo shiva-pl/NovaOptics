@@ -110,3 +110,10 @@ def test_normal_glass_model_keeps_nd_vd_and_beats_cauchy(space):
         errs_normal.append(np.abs(n - x).max())
         errs_cauchy.append(np.abs(c - x).max())
     assert np.sqrt(np.mean(np.square(errs_normal))) < 0.2 * np.sqrt(np.mean(np.square(errs_cauchy)))
+
+
+def test_ar_wafers_excluded_by_default(glasses):
+    gs = build_glass_space(glasses, SPEC.wavelengths)
+    assert not any(n.startswith("REALVIEW") for n in gs.names)
+    gs_all = build_glass_space(glasses, SPEC.wavelengths, exclude_comments=())
+    assert any(n.startswith("REALVIEW") for n in gs_all.names)

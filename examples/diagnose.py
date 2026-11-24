@@ -37,12 +37,13 @@ SHOW_LABEL = {"W040": "spherical W040", "W131": "coma W131", "W222": "astigmatis
               "W111": "lateral color W111 (F-C)"}
 
 
-def load_designs():
+def load_designs(glass):
     rows = json.loads((HERE / "output" / "results.json").read_text())
     out = {}
     for r in rows:
         p = {k: jnp.asarray(v) for k, v in r["params"].items()}
-        lay = Layout(n_elem=3, stop_index=1, aspheres="aspheric" in r["design"])
+        lay = Layout(n_elem=3, stop_index=1, aspheres="aspheric" in r["design"],
+                     glass=glass if "g" in p else None)
         out[r["design"]] = (p, lay)
     return out
 
@@ -108,8 +109,9 @@ def plot_elements(designs, names, spec, path):
     plt.close(fig)
 
 
-def morph_diagnostics(spec, gaps_at=(0.25, 0.5, 0.75, 1.0)):
-    p, lay, rec, info = C.design_from_phase(spec, aspheres=True, verbose=False)
+def morph_diagnostics(spec, glass, gaps_at=(0.25, 0.5, 0.75, 1.0)):
+    p, lay, rec, info = C.design_from_phase(spec, aspheres=True, verbose=False, glass=glass,
+                                            snap="gradual")
     cand = next(c for c in info["candidates"] if c["name"] == info["chosen"])
     rec = cand["rec"]
     rec_s = C.Recorder(spec, verbose=False)
@@ -177,12 +179,15 @@ def plot_morph(traj, gaps, path):
 def main(designs_only=False):
     OUT.mkdir(parents=True, exist_ok=True)
     spec = Spec()
-    designs = load_designs()
+    from design_triplet import load_catalog
+
+    glass = load_catalog(spec)
+    designs = load_designs(glass)
     report = design_report(designs, spec)
     plot_elements(designs, ["phase-first, spherical (asphere fade)", "conventional, spherical"],
                   spec, OUT / "seidel_elements.png")
     if not designs_only:
-        traj, gaps, info = morph_diagnostics(spec)
+        traj, gaps, info = morph_diagnostics(spec, glass)
         (OUT / "morph.json").write_text(json.dumps(
             {"traj": [{k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in t.items()}
                       for t in traj], "gaps": gaps}, indent=1))

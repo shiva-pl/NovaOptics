@@ -163,14 +163,14 @@ def describe(params, layout: Layout, spec: Spec | None = None) -> str:
     """Human-readable prescription."""
     p = to_numpy(G.resolve(params, layout))
     lines = [
-        f"{'item':<8}{'R1 [mm]':>11}{'R2 [mm]':>11}{'t [mm]':>8}{'glass':>22}{'gap->':>9}"
+        f"{'item':<8}{'R1 [mm]':>13}{'R2 [mm]':>13}{'t [mm]':>9}  {'glass':<24}{'gap->':>9}"
         f"{'  max |W| [waves]':>18}"
     ]
     wl = (spec.ref_wavelength if spec else G.LAMBDA_D) * 1e-3
     for k, item in enumerate(layout.items()):
         gap = p["gaps"][k] if k < layout.n_gaps else p["bfd"]
         if item == "stop":
-            lines.append(f"{'STOP':<8}{'':>11}{'':>11}{'':>8}{'':>22}{gap:>9.3f}")
+            lines.append(f"{'STOP':<8}{'':>13}{'':>13}{'':>9}  {'':<24}{gap:>9.3f}")
             continue
         i = item
         r1 = "inf" if abs(p["c1"][i]) < 1e-9 else f"{1 / p['c1'][i]:.3f}"
@@ -181,7 +181,7 @@ def describe(params, layout: Layout, spec: Spec | None = None) -> str:
         rr = np.linspace(0, 1, 50) ** 2
         w = np.polyval(np.r_[p["phase"][i][::-1], 0.0], rr)
         lines.append(
-            f"{'E' + str(i):<8}{r1:>11}{r2:>11}{p['t'][i]:>8.3f}{gname:>22}{gap:>9.3f}"
+            f"{'E' + str(i):<8} {r1:>12} {r2:>12} {p['t'][i]:>8.3f}  {gname:<24}{gap:>9.3f}"
             f"{np.max(np.abs(w)) / wl:>18.2f}"
         )
     if layout.aspheres:

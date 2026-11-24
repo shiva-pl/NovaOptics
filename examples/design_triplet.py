@@ -33,11 +33,20 @@ from novaoptics.baseline import conventional  # noqa: E402
 from novaoptics.system import Spec, describe, to_numpy  # noqa: E402
 
 OUT = Path(__file__).parent / "output"
+AGF = Path(__file__).parents[1] / "schott2025.AGF"
+
+
+def load_catalog(spec):
+    """Real glasses: preferred SCHOTT catalog (AR waveguide wafers excluded)."""
+    from novaoptics.catalog import build_glass_space, read_agf
+
+    return build_glass_space(read_agf(AGF), spec.wavelengths)
 
 
 def main(quick=False):
     OUT.mkdir(parents=True, exist_ok=True)
     spec = Spec()
+    glass = load_catalog(spec)
     n_starts = 4 if quick else 12
     rows, designs = [], {}
 
@@ -54,7 +63,8 @@ def main(quick=False):
 
     # 1. phase-first, aspheric
     t = time.time()
-    p, lay, rec, info = C.design_from_phase(spec, aspheres=True, top_k=1 if quick else 2)
+    p, lay, rec, info = C.design_from_phase(spec, aspheres=True, top_k=1 if quick else 2,
+                                            glass=glass, snap="gradual")
     record("phase-first, aspheric", p, lay, time.time() - t,
            f"architecture ranking in phase space: {info['architectures']}; chosen {info['chosen']}")
     rec_phase = rec
@@ -78,6 +88,7 @@ def main(quick=False):
     for asph in (True, False):
         t = time.time()
         pc, layc, cinfo = conventional(spec, n_starts=n_starts, aspheres=asph, free_glass=True,
+                                       glass=glass,
                                        verbose=False)
         kind = "aspheric" if asph else "spherical"
         record(f"conventional, {kind}", pc, layc, time.time() - t,

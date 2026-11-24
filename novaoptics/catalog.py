@@ -43,6 +43,7 @@ class Glass:
     coef: np.ndarray
     lmin: float = 0.0
     lmax: float = 100.0
+    comment: str = ""  # AGF GC line
 
     def index(self, wl_um):
         L2 = np.asarray(wl_um, dtype=float) ** 2
@@ -79,6 +80,8 @@ def read_agf(path) -> list[Glass]:
         elif cur is not None and tok[0] == "CD":
             vals = [float(v) for v in tok[1:]]
             cur.coef[: len(vals)] = vals
+        elif cur is not None and tok[0] == "GC":
+            cur.comment = line[2:].strip()
         elif cur is not None and tok[0] == "LD":
             cur.lmin, cur.lmax = float(tok[1]), float(tok[2])
     if cur is not None:
@@ -154,15 +157,25 @@ class GlassSpace:
 FEAS_FACTOR = 2.5
 
 
+EXCLUDE_COMMENTS = ("augmented reality",)
+
+
 def build_glass_space(glasses, wavelengths, k=3, n_grid=16, statuses=(0, 1),
-                      feas_radius=None) -> GlassSpace:
+                      feas_radius=None, exclude_comments=EXCLUDE_COMMENTS) -> GlassSpace:
     """PCA of catalog indices over the band spanned by `wavelengths` (plus those exact
-    wavelengths, so the design wavelengths are evaluated without interpolation)."""
+    wavelengths, so the design wavelengths are evaluated without interpolation).
+
+    `statuses`: AGF status codes to keep (default standard + preferred).
+    `exclude_comments`: drop glasses whose AGF comment contains any of these strings;
+    by default the AR waveguide wafers (e.g. SCHOTT RealView), which are thin
+    substrates rather than bulk lens glass.  Pass () to keep them.
+    """
     wl = np.asarray(wavelengths, dtype=float)
     lo, hi = wl.min(), wl.max()
     grid = np.unique(np.r_[np.linspace(lo, hi, n_grid), wl])
     cand = [g for g in glasses if g.status in statuses and g.lmin <= lo + 1e-9
-            and g.lmax >= hi - 1e-9]
+            and g.lmax >= hi - 1e-9
+            and not any(c.lower() in g.comment.lower() for c in exclude_comments)]
     # Drop optically identical entries (e.g. N-BK7 / N-BK7HT / N-BK7HTi: same glass,
     # different transmission grade), keeping the shortest name.
     cand.sort(key=lambda g: (len(g.name), g.name))
