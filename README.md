@@ -191,11 +191,65 @@ What it showed:
 
 ![morph diagnostics](examples/output/diagnostics/morph_seidel.png)
 
+## Real glasses
+
+The designs use the **preferred SCHOTT catalog** (`schott2025.AGF`, 130 glasses after
+removing optically identical transmission grades and AR waveguide wafers).
+`novaoptics/catalog.py` reads Zemax AGF files: Sellmeier and Schott formulas,
+status codes, validity ranges.
+
+**PCA glass space.** Each glass is its index curve on a wavelength grid over the
+design band, x = μ + B·a. Three coordinates (index level, dispersion, partial
+dispersion) reproduce every glass to < 1·10⁻⁵ in index; two leave 1·10⁻⁴ (the
+secondary-spectrum information). A snapped glass also keeps its small off-span
+residual, so it is exact.
+
+**Normal-glass model for continuous glasses.** While a glass is still continuous it
+is an (n_d, V_d) point whose dispersion *shape* (n − n_d)/(n_F − n_C) is regressed
+on (n_d, V_d) over the catalog. Its index-curve error against real glass is 7·10⁻⁶
+rms, against 1.1·10⁻⁴ for a two-term Cauchy model, and n_d, V_d stay exact.
+Continuous glasses are bounded by the catalog's convex hull in the glass map.
+
+**Snapping.** Candidates are ranked by predicted merit |r + JΔ|², where J is the
+Jacobian with respect to the glass coordinates, together with the glasses whose
+index curves are nearest. The most promising combinations are snapped exactly
+and re-optimized. Before snapping, a pull toward real glasses ramps up while
+everything else re-optimizes. With `snap="gradual"` (the default in the example)
+that pull already ramps up *during* the morph (ν ∝ s²).
+
+What did not work, and why:
+
+* **PCA coordinates as free continuous variables.** The color stage reached
+  0.9–5 waves against 0.1–0.3 in (n_d, V_d). With a nearest-glass radius the
+  feasible set is a scatter of small balls that traps the optimizer. With the 3-D
+  convex hull it is still poorly conditioned.
+* **A two-term Cauchy model.** All its glasses have the same dispersion shape, so
+  continuous designs corrected color for glasses that do not exist. Snapping to
+  real neighbours within 0.015 in n_d then cost 0.2 → 0.9 waves.
+* **Snap timing** (aspheric, the two best architectures, before the final
+  re-check):
+
+| glasses snapped | mean / max RMS WFE [waves] |
+|---|---|
+| in phase space, fixed through the morph (`early`) | 0.177 / 0.292 |
+| after the morph (`late`) | 0.187 / 0.265 |
+| pull ramped during the morph (`gradual`) | **0.146 / 0.217** |
+
+  Snapping before the morph beats snapping after it on the mean. Committing glass
+  gradually *while* the lens takes shape is better than either, and is the only
+  mode where both architectures stay good.
+
+* **The Cauchy model flattered earlier results** by 0.03–0.04 waves. Re-evaluated
+  with exact Sellmeier dispersion and re-optimized at fixed glasses, the previous
+  designs scored 0.123 / 0.171 (phase-first, aspheric) and 0.171 / 0.243
+  (conventional, aspheric). All numbers in *Results* are with exact catalog glasses.
+
 ## Layout
 
 ```
 novaoptics/
-  glass.py         (n_d, V_d) glass model, catalog, glass-map region
+  glass.py         glass models: (n_d, V_d) Cauchy / normal-glass, PCA dispatch
+  catalog.py       AGF reader, PCA glass space, normal-glass regression
   system.py        Layout / Spec / parameter pytree, prescription printout
   trace.py         differentiable ray tracer: sphere + asphere + phase interface
   analysis.py      wavefront error, spot, EFL, distortion, AD field curves
