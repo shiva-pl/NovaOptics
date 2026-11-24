@@ -9,6 +9,7 @@ only changes `cfg` values compiles once.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +19,17 @@ from jax.flatten_util import ravel_pytree
 from .merit import residuals
 from .system import Layout, Spec
 
-_CACHE: dict = {}
+# Compiled residual/Jacobian pairs, least recently used first.  Every layout (stop
+# position, glass model, aspheres) compiles its own pair, so the cache is bounded:
+# an unbounded one ran a long multi-architecture run out of memory in LLVM.
+_CACHE: OrderedDict = OrderedDict()
+CACHE_SIZE = 16
+
+
+def clear_compiled():
+    """Drop all compiled merit functions (ours and JAX's own caches)."""
+    _CACHE.clear()
+    jax.clear_caches()
 
 
 def free_mask(params, free: dict):
@@ -43,7 +54,9 @@ def free_mask(params, free: dict):
 
 def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
     key = (layout, spec, idx_key, transform)
-    if key not in _CACHE:
+    if key in _CACHE:
+        _CACHE.move_to_end(key)
+    else:
         idx = jnp.asarray(idx_key)
 
         def res(x, full, cfg):
@@ -53,6 +66,8 @@ def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
             return residuals(p, layout, spec, cfg)
 
         _CACHE[key] = (jax.jit(res), jax.jit(jax.jacfwd(res)))
+        while len(_CACHE) > CACHE_SIZE:
+            _CACHE.popitem(last=False)
     return _CACHE[key]
 
 

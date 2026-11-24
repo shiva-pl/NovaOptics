@@ -30,6 +30,7 @@ from novaoptics import analysis as A  # noqa: E402
 from novaoptics import continuation as C  # noqa: E402
 from novaoptics import plot as P  # noqa: E402
 from novaoptics.baseline import conventional  # noqa: E402
+from novaoptics.optimize import clear_compiled  # noqa: E402
 from novaoptics.system import Spec, describe, to_numpy  # noqa: E402
 
 OUT = Path(__file__).parent / "output"
@@ -72,6 +73,7 @@ def main(quick=False):
            f"architecture ranking in phase space: {info['architectures']}; chosen {info['chosen']}")
     rec_phase = rec
 
+    clear_compiled()
     # 2. phase-first -> all-spherical: fade the aspheres out of every materialized
     #    architecture and keep the best (ranking by materialized, not phase-space, merit)
     t = time.time()
@@ -87,6 +89,7 @@ def main(quick=False):
     record("phase-first, spherical (asphere fade)", best[1], best[2], time.time() - t,
            f"asphere fade of each materialized architecture; best was {best[3]}")
 
+    clear_compiled()
     # 3./4. conventional multi-start from Cooke-type starting points
     for asph in (True, False):
         t = time.time()

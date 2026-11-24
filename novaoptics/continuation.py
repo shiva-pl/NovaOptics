@@ -35,7 +35,7 @@ import numpy as np
 from . import analysis as A
 from . import glass as G
 from .merit import make_cfg, virtual_petzval_curvature
-from .optimize import optimize
+from .optimize import clear_compiled, optimize
 from .system import Layout, Spec, glass_label, nearest_in_space, new_params, set_glass
 
 
@@ -568,6 +568,7 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
                                 "glass-snap", virtual_petzval=virtual_petzval)
         results.append({"name": name, "params": p, "layout": lay, "rec": rec,
                         "score": rec.snaps[-1].mean_wfe})
+        clear_compiled()
     results.sort(key=lambda r: r["score"] if np.isfinite(r["score"]) else np.inf)
     return results
 
@@ -601,6 +602,7 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
                                    glass_pull=glass_pull if snap == "gradual" else 0.0)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
         finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
+        clear_compiled()  # each architecture compiles its own merit functions
     finals.sort(key=lambda f: f[0] if np.isfinite(f[0]) else np.inf)
     score, name, p, lay, rec = finals[0]
     info = {"architectures": [(a["name"], a["score"]) for a in archs],
