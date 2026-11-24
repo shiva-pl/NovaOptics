@@ -277,12 +277,62 @@ What did not work, and why:
   designs scored 0.123 / 0.171 (phase-first, aspheric) and 0.171 / 0.243
   (conventional, aspheric). All numbers in *Results* are with exact catalog glasses.
 
+## Stop shift
+
+`novaoptics/stopshift.py` applies stop-shift theory. Moving the stop to z_s adds
+E = −ȳ(z_s)/y(z_s) times the marginal ray to the chief ray, and the third-order sums
+change in closed form:
+
+S_II* = S_II + E·S_I, S_III* = S_III + 2E·S_II + E²·S_I,
+S_V* = S_V + E(3S_III + S_IV) + 3E²S_II + E³S_I, C_II* = C_II + E·C_I,
+while S_I, S_IV and C_I do not change.
+
+The color rules follow from the last line. With axial color present, lateral color
+is linear in stop position and vanishes at one position. With axial color
+corrected, lateral color does not depend on the stop, and the stop is free for coma,
+astigmatism and field curvature. The closed-form sums agree with a full Seidel
+retrace at the moved stop to 10⁻⁶ (`tests/test_stopshift.py`).
+
+**STOP-SHIFT stage** (after COLOR, `design_from_phase(stop_shift=True)`):
+
+1. Scan every stop position in air, including across the thin phase screens (moving
+   past a screen is continuous in phase space).
+2. Score each on third-order coma, astigmatism and sagittal field curvature, with the
+   screens' virtual Petzval included.
+3. Move the stop to the best few positions and re-optimize each with the real-ray
+   merit. The current position is always a candidate, so the stage cannot make
+   things worse.
+
+**Finding: the merit does not correct axial color first.** After the original COLOR
+stage, primary axial color was still about 1.7 waves F−C. Seidel, exact paraxial and
+real-ray fits agree, so this is not a modelling error. The polychromatic merit
+*balances* axial color against spherochromatism instead of zeroing it, which
+violates the precondition of the stop-shift ordering. A total-axial-color term
+(`w_axial`) lets COLOR correct it explicitly. In phase space (mean RMS WFE on the
+design surface):
+
+| architecture | color by merit → stop shift | axial color first → stop shift |
+|---|---|---|
+| `+−+` | 0.358 → 0.358 | 0.461 → 0.434 |
+| `−++` | 0.155 → **0.132** | 3.89 → 0.248 |
+| `++−` | 0.656 → 0.655 | 0.155 → **0.118** |
+| `+++` | 0.370 → **0.144** | 2.49 → 2.00 |
+
+The stop shift helps whenever the stop has somewhere better to go. The stop-shift
+ordering wins outright for `++−`, which had always ranked last and becomes the best
+architecture. It hurts where the best design balances axial color against
+spherochromatism. Phase space is cheap, so with `stop_shift=True` each architecture
+tries both orderings and keeps the better.
+
+*Full-pipeline results with the stop shift: being regenerated.*
+
 ## Layout
 
 ```
 novaoptics/
   glass.py         glass models: (n_d, V_d) Cauchy / normal-glass, PCA dispatch
   catalog.py       AGF reader, PCA glass space, normal-glass regression
+  stopshift.py     stop-shift relations, stop-position scan, relayout
   system.py        Layout / Spec / parameter pytree, prescription printout
   trace.py         differentiable ray tracer: sphere + asphere + phase interface
   analysis.py      wavefront error, spot, EFL, distortion, AD field curves
