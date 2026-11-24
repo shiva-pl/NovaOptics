@@ -160,11 +160,11 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
 
 
 def stage_color(p, lay: Layout, spec: Spec, rec: Recorder, steps=5, iters=40, mech=Mech(),
-                virtual_petzval=1.0):
+                virtual_petzval=1.0, w_axial=0.0):
     free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
     for k, beta in enumerate(np.linspace(0, 1, steps + 1)[1:], start=1):
         cfg = make_cfg(beta=beta, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
-                       w_content=mech.w_content)
+                       w_content=mech.w_content, w_axial=w_axial)
         p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
         rec.add("color", k, p, lay, beta, f"beta={beta:.2f}  glasses {_glasses(p, lay)}",
                 virtual_petzval)
@@ -175,7 +175,7 @@ X_MAX = 4.0
 
 
 def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
-                     virtual_petzval=1.0, k=3, iters=60):
+                     virtual_petzval=1.0, k=3, iters=60, w_axial=0.0):
     """STOP-SHIFT: place the aperture stop once axial color is corrected.
 
     Stop-shift theory (see stopshift.py) predicts the third-order coma, astigmatism and
@@ -193,7 +193,7 @@ def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
     i_now = int(np.argmin(np.abs(sc["z"] - z_now)))
     cands = SS.candidates(sc, k=k)
     cfg = make_cfg(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
-                   w_content=mech.w_content)
+                   w_content=mech.w_content, w_axial=w_axial)
     free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
     best = None
     for z in [z_now] + [c for c in cands if abs(c - z_now) > 0.5]:
@@ -508,6 +508,9 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
     return stage_catalog(p, lay_s, spec, rec, mech=mech)
 
 
+AXIAL_WEIGHT = 10.0  # w_axial of the "axial color first" ordering
+
+
 PATTERNS = {
     "+-+": (2.0, -3.0, 2.0),
     "-++": (-2.0, 1.5, 1.5),
@@ -528,10 +531,30 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
         p, lay = stage_distribute(p0, lay0, spec, rec, n_elem=len(pat), stop_index=stop_index,
                                   mech=mech, virtual_petzval=virtual_petzval, pattern=pat,
                                   aspheres=aspheres, glass=glass)
-        p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
-        if stop_shift:
-            p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech,
-                                      virtual_petzval=virtual_petzval)
+        if not stop_shift:
+            p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
+        else:
+            # Two color orderings, both followed by the stop shift; keep the better.
+            #  - merit color: polychromatic merit (axial color balanced against
+            #    spherochromatism), then place the stop;
+            #  - stop-shift ordering: correct primary axial color first (C_I -> 0, so
+            #    lateral color no longer depends on the stop), then place the stop.
+            # Neither wins for every architecture, and phase space is cheap.
+            best = None
+            p_d, lay_d, n_d = p, lay, len(rec.snaps)
+            for w_ax, tag in ((0.0, "merit color"), (AXIAL_WEIGHT, "axial color first")):
+                r = Recorder(spec, verbose=verbose)
+                r.snaps = list(rec.snaps[:n_d])
+                q, lq = stage_color(p_d, lay_d, spec, r, mech=mech,
+                                    virtual_petzval=virtual_petzval, w_axial=w_ax)
+                q, lq = stage_stop_shift(q, lq, spec, r, mech=mech,
+                                         virtual_petzval=virtual_petzval, w_axial=w_ax)
+                r.snaps[-1].note = f"[{tag}] " + r.snaps[-1].note
+                score = r.snaps[-1].mean_wfe
+                score = score if np.isfinite(score) else np.inf
+                if best is None or score < best[0]:
+                    best = (score, q, lq, r)
+            _, p, lay, rec = best
         if glass is not None and snap == "early":
             # snap to real glasses while still in phase space: cheap, and the
             # architecture ranking then reflects glasses that actually exist

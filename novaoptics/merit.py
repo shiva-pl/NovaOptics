@@ -16,6 +16,8 @@ triggers recompilation:
     tmax     maximum center thickness of elements      [mm]
     emin     minimum edge thickness of elements        [mm]
     gmin     minimum center/edge air space between elements [mm]
+    w_axial  weight of the total primary axial color W020(F-C) (Seidel C_I/2, waves).
+             Lets a stage correct axial color explicitly, as stop-shift theory assumes.
     w_content  weight of per-element Seidel spherical aberration, coma and astigmatism
              (d-line waves).  Pushes toward elements that are corrected on their own
              instead of large contributions cancelling between elements.
@@ -53,6 +55,7 @@ DEFAULT_CFG = dict(
     w_constraint=10.0,
     virtual_petzval=0.0,
     w_content=0.0,
+    w_axial=0.0,
     bfd_min=5.0,
 )
 
@@ -188,8 +191,9 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
     if layout.n_elem > 0:
         from .diagnostics import element_waves
 
-        ew = element_waves(params, layout, spec, cfg["beta"])[:, :3]
-        r_content = jnp.sqrt(cfg["w_content"]) * ew.ravel()
+        ew_all = element_waves(params, layout, spec, cfg["beta"])
+        r_content = jnp.sqrt(cfg["w_content"]) * ew_all[:, :3].ravel()
+        r_axial = jnp.sqrt(cfg["w_axial"]) * jnp.atleast_1d(jnp.sum(ew_all[:, 5]))
     if layout.glass is None:
         pts = None if layout.region is None else (layout.region.nd, layout.region.vd)
         gdist = jnp.stack([G.catalog_softmin_distance(params["nd"][i], params["vd"][i],
@@ -220,7 +224,7 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
     r_glass = jnp.sqrt(cfg["nu"]) * gdist
 
     return jnp.concatenate(
-        [r_wfe, r_spot, jnp.atleast_1d(r_efl), r_dist, r_cons, r_phase, r_asph, r_content, r_glass,
+        [r_wfe, r_spot, jnp.atleast_1d(r_efl), r_dist, r_cons, r_phase, r_asph, r_content, r_axial, r_glass,
          r_gbounds]
     )
 
