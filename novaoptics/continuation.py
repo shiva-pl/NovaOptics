@@ -341,10 +341,14 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
         Ji = J[:, i * k:(i + 1) * k]
         pred = np.nan_to_num(np.sum((r0[None, :] + (C - g0[i]) @ Ji.T) ** 2, axis=1),
                              nan=np.inf)
-        # nearest = closest index curve (physical units); normalized PCA coordinates
-        # would magnify the tiny partial-dispersion axis
+        # nearest = same (n_d/0.1, V_d/10) metric the catalog pull uses, so the
+        # all-nearest combination is exactly where the pull ended.  (Raw index-curve
+        # distance is dominated by the index level and ignores dispersion; normalized
+        # PCA coordinates magnify the tiny partial-dispersion axis.)
         cur = gs.mu + gs.B @ (g0[i] * gs.scale) + np.asarray(p["gr"][i])
-        dist = np.sum((gs.X - cur) ** 2, axis=1)
+        jF, jd, jC = (gs.grid_index(w) for w in (G.LAMBDA_F, G.LAMBDA_D, G.LAMBDA_C))
+        nd_i, vd_i = cur[jd], (cur[jd] - 1.0) / (cur[jF] - cur[jC])
+        dist = ((gs.nd - nd_i) / 0.1) ** 2 + ((gs.vd - vd_i) / 10.0) ** 2
         near = list(np.argsort(dist)[:top_m])
         nearest.append(near[0])
         # The linear prediction is reliable for small moves only, so the nearest
