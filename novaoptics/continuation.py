@@ -175,29 +175,41 @@ X_MAX = 4.0
 
 
 def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
-                     virtual_petzval=1.0, k=3, iters=60, w_axial=0.0):
+                     virtual_petzval=1.0, k=3, iters=60, w_axial=0.0, phase=True):
     """STOP-SHIFT: place the aperture stop once axial color is corrected.
 
     Stop-shift theory (see stopshift.py) predicts the third-order coma, astigmatism and
     field curvature for every stop position in closed form; with axial color corrected
     the lateral color does not depend on the stop.  The `k` best predicted positions
-    and the current one are tried for real: the stop is moved there and the phase
-    system re-optimized with the full real-ray merit.  The best real result is kept, so
-    the stage can only improve the design.
+    and the current one are tried for real: the stop is moved there and the system
+    re-optimized with the full real-ray merit.  The best real result is kept, so the
+    stage can only improve the design.
+
+    phase=True: phase-space system (thin screens, virtual Petzval, phase free).
+    phase=False: a glass system (real thicknesses; the stop stays in air gaps;
+    curvatures, thicknesses, spacings, aspheres and continuous glasses re-optimized).
     """
     from . import stopshift as SS
     from .merit import residuals
 
-    sc = SS.scan(p, lay, spec, beta=1.0, virtual_petzval=virtual_petzval)
+    vp = virtual_petzval if phase else 0.0
+    sc = SS.scan(p, lay, spec, beta=1.0, virtual_petzval=vp)
     z_now = sc["current_z"]
     i_now = int(np.argmin(np.abs(sc["z"] - z_now)))
     cands = SS.candidates(sc, k=k)
-    cfg = make_cfg(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
-                   w_content=mech.w_content, w_axial=w_axial)
-    free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
+    if phase:
+        cfg = make_cfg(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=vp,
+                       w_content=mech.w_content, w_axial=w_axial)
+        free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
+    else:
+        cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin,
+                       tmax=mech.tmax, w_content=mech.w_content, w_axial=w_axial)
+        free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
     best = None
     for z in [z_now] + [c for c in cands if abs(c - z_now) > 0.5]:
-        q, lq = SS.relayout(p, lay, z)
+        # keep the current layout for the current position: with a stop exactly at a
+        # thin screen, a relayout could put it on the other side of that element
+        q, lq = (p, lay) if z == z_now else SS.relayout(p, lay, z)
         q, _ = optimize(q, lq, spec, cfg, free, iters=iters)
         cost = float(np.sum(np.asarray(residuals(q, lq, spec, cfg)) ** 2))
         cost = cost if np.isfinite(cost) else np.inf
@@ -208,11 +220,11 @@ def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
         if best is None or cost < best[0]:
             best = (cost, q, lq, z, i)
     _, q, lq, z, i = best
-    rec.add("stop-shift", 0, q, lq, 1.0,
+    rec.add("stop-shift" if phase else "stop-shift (glass)", 0, q, lq, 1.0,
             f"stop {z_now:+.1f} -> {z:+.1f} mm (stop_index {lq.stop_index}); third-order "
             f"merit {sc['merit'][i_now]:.3g} -> {sc['merit'][i]:.3g}; "
             f"C_I={sc['CI'][i_now]:.2e} (lateral color stop-independent if ~0)",
-            virtual_petzval, extra={"scan": sc})
+            vp, extra={"scan": sc})
     return q, lq
 
 
@@ -476,7 +488,7 @@ def fade_aspheres(z, cfg, layout: Layout):
 
 
 def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40, mech=Mech(),
-                   mu_a=1e-4, polish_iters=150):
+                   mu_a=1e-4, polish_iters=150, stop_shift=False):
     """Aspheric design -> all-spherical design, by fading the aspheres out.
 
     The optimizer re-balances curvatures, thicknesses, spacings and glasses while
@@ -505,6 +517,8 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
     free = {k: True for k in _glass_vars(lay_s, glass=False)}
     p, _ = optimize(p, lay_s, spec, make_cfg(**base), free, iters=polish_iters)
     rec.add("spherize", steps + 1, p, lay_s, 1.0, "all-spherical polish")
+    if stop_shift:
+        p, lay_s = stage_stop_shift(p, lay_s, spec, rec, mech=mech, phase=False)
     return stage_catalog(p, lay_s, spec, rec, mech=mech)
 
 
@@ -575,7 +589,8 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
                       patterns=PATTERNS, top_k=2, aspheres=False, glass=None, snap="early",
-                      morph_iters=30, glass_pull=0.1, stop_shift=False, verbose=True):
+                      morph_iters=30, glass_pull=0.1, stop_shift=False, glass_stop_shift=False,
+                      verbose=True):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
     `glass`: a catalog.GlassSpace of real catalog glasses.  Continuous stages use
@@ -584,6 +599,11 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
     (re-checked at the end); snap="late" keeps glasses continuous through the morph and
     snaps once at the end; snap="gradual" is "late" plus a pull toward real glasses
     that ramps up during the morph.  glass=None: the built-in small (n_d, V_d) list.
+
+    stop_shift: after COLOR, place the stop with stop-shift theory in phase space; each
+    architecture tries color by merit and axial color first, keeping the better.
+    glass_stop_shift: the same on the materialized glass system, before the catalog
+    stage (stop in air gaps, real thicknesses).
     """
     rec0 = Recorder(spec, verbose=verbose)
     p0, lay0 = stage_ideal(spec, rec0)
@@ -600,6 +620,8 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         p, lay = stage_materialize(a["params"], a["layout"], spec, rec, mech=mech,
                                    virtual_petzval=virtual_petzval, iters=morph_iters,
                                    glass_pull=glass_pull if snap == "gradual" else 0.0)
+        if glass_stop_shift:
+            p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech, phase=False)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
         finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
         clear_compiled()  # each architecture compiles its own merit functions
