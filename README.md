@@ -293,7 +293,8 @@ corrected, lateral color does not depend on the stop, and the stop is free for c
 astigmatism and field curvature. The closed-form sums agree with a full Seidel
 retrace at the moved stop to 10⁻⁶ (`tests/test_stopshift.py`).
 
-**STOP-SHIFT stage** (after COLOR, `design_from_phase(stop_shift=True)`):
+**STOP-SHIFT stage** (in phase space after COLOR, `design_from_phase(stop_shift=True)`;
+on the materialized glass system, `glass_stop_shift=True`):
 
 1. Scan every stop position in air, including across the thin phase screens (moving
    past a screen is continuous in phase space).
@@ -324,7 +325,29 @@ architecture. It hurts where the best design balances axial color against
 spherochromatism. Phase space is cheap, so with `stop_shift=True` each architecture
 tries both orderings and keeps the better.
 
-*Full-pipeline results with the stop shift: being regenerated.*
+**Where to apply it.** The stage works on phase-space systems and on materialized
+glass systems (`stage_stop_shift(phase=False)`: stop in air gaps, real thicknesses,
+glass-system variables). Full pipeline, aspheric and spherized designs, mean / max RMS
+WFE on the dense grid:
+
+| stop shift in phase space | stop shift on the glass system | aspheric | spherical |
+|---|---|---|---|
+| — | — | 0.122 / 0.182 | **0.281 / 0.372** |
+| ✓ | — | 0.119 / 0.172 | 0.489 / 0.581 |
+| — | ✓ | **0.102 / 0.157** | 0.286 / 0.405 |
+| ✓ | ✓ | 0.108 / 0.158 | 0.307 / 0.394 |
+
+* **Stop-shift theory pays off where traditional design applies it: on the real glass
+  system.** It gives the best aspheric design, 17% better.
+* **In phase space it misleads.** Elements there are thin and freely aspheric, so the
+  best stop for them is not the best stop for thick glass. For `+−+` it moved the stop
+  in front of the first element. The spherized Cooke-type design then got worse
+  (0.28 → 0.49), and a later glass-stage shift recovered most of it (0.31).
+* For spherical designs the glass-stage shift does not help either (0.286 vs 0.281,
+  within run-to-run variation).
+* The example therefore uses `glass_stop_shift=True` only. The phase-space stage and
+  the axial-color-first ordering remain available (`stop_shift=True`). They are what
+  made `++−` competitive in phase space.
 
 ## Layout
 
