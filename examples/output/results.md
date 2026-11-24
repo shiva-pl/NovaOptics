@@ -1,22 +1,22 @@
 | design | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [um] | max distortion | time [s] |
 |---|---|---|---|---|---|
-| phase-first, aspheric | 0.128 | 0.183 | 3.2 | 1.44% | 411 |
-| phase-first, spherical (asphere fade) | 0.319 | 0.436 | 6.0 | 0.77% | 138 |
-| conventional, aspheric | 0.157 | 0.235 | 4.1 | 0.77% | 85 |
-| conventional, spherical | 0.332 | 0.476 | 5.9 | 1.07% | 42 |
+| phase-first, aspheric | 0.122 | 0.182 | 3.5 | 0.83% | 449 |
+| phase-first, spherical (asphere fade) | 0.281 | 0.372 | 5.8 | 0.71% | 158 |
+| conventional, aspheric | 0.174 | 0.233 | 4.4 | 0.65% | 91 |
+| conventional, spherical | 0.311 | 0.431 | 5.9 | 0.80% | 60 |
 
 All figures evaluated on 21 field points (0-20 deg) x 8x16 pupil samples, F/d/C, after optimization on 5 field points x 6x12 pupil samples.
 
 ## phase-first, aspheric
 
-architecture ranking in phase space: [('-++', 0.12828666446702192), ('+-+', 0.210715515160337), ('++-', 0.6617686475877221), ('+++', 2.4379403561902726)]; chosen -++
+architecture ranking in phase space: [('-++', 0.15509337534138173), ('+-+', 0.3577702056890844), ('+++', 0.3699279679140329), ('++-', 0.6555283692820657)]; chosen -++
 
 ```
-item        R1 [mm]    R2 [mm]  t [mm]                 glass    gap->   max |W| [waves]
-E0          -72.674  -800.520*   6.946                 N-SF6    9.877              0.00
-STOP                                                           -0.000
-E1           43.719   -25.407*   7.475               N-FK51A   40.253              0.00
-E2          -18.512   -48.741*   2.000                N-SF11    6.591              0.00
+item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]
+E0            -59.818    -435.642*    2.000  N-SF66                      8.094              0.00
+STOP                                                                    -0.000
+E1             46.954     -25.728*    8.000  N-SK5                      34.004              0.00
+E2            -16.728     -39.162*    2.000  SF6G05                     10.179              0.00
 * rear surface is an even asphere
 ```
 
@@ -25,23 +25,23 @@ E2          -18.512   -48.741*   2.000                N-SF11    6.591           
 asphere fade of each materialized architecture; best was +-+
 
 ```
-item        R1 [mm]    R2 [mm]  t [mm]                 glass    gap->   max |W| [waves]
-E0           19.568     41.367   8.000              N-LASF44    2.178              0.00
-STOP                                                            0.326
-E1          -40.085     20.886   2.000                N-SF11    2.506              0.00
-E2           48.636    -30.111   2.625             N-LASF31A   39.369              0.00
+item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]
+E0             19.544       35.861    7.769  N-LASF41                    1.677              0.00
+STOP                                                                     0.398
+E1            -34.317       21.799    2.000  SF56A                       2.029              0.00
+E2             48.594      -26.926    2.669  N-LASF31A                  40.634              0.00
 ```
 
 ## conventional, aspheric
 
-2/12 Cooke-type starts converged usefully
+3/12 Cooke-type starts converged usefully
 
 ```
-item        R1 [mm]    R2 [mm]  t [mm]                 glass    gap->   max |W| [waves]
-E0           27.131   -92.875*   4.874             N-LASF31A   -0.000              0.00
-STOP                                                            1.876
-E1          -20.621    15.268*   2.639                 N-SF1    1.214              0.00
-E2           23.732   -49.828*   7.250             N-LASF31A   41.460              0.00
+item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]
+E0             24.447    -101.017*    4.153  N-LASF44                    0.657              0.00
+STOP                                                                     1.418
+E1            -19.574      13.758*    2.000  N-SF2                       1.292              0.00
+E2             21.996     -45.044*    7.083  N-LASF44                   41.921              0.00
 * rear surface is an even asphere
 ```
 
@@ -50,9 +50,9 @@ E2           23.732   -49.828*   7.250             N-LASF31A   41.460           
 2/12 Cooke-type starts converged usefully
 
 ```
-item        R1 [mm]    R2 [mm]  t [mm]                 glass    gap->   max |W| [waves]
-E0           20.831     51.933   8.000             N-LASF31A    2.321              0.00
-STOP                                                            0.237
-E1          -52.307     21.024   2.000                N-SF57    3.619              0.00
-E2           58.298    -32.329   2.667             N-LASF31A   38.764              0.00
+item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]
+E0             19.977       42.091    8.000  N-LASF41                    1.970              0.00
+STOP                                                                     0.326
+E1            -40.258       21.448    2.000  N-SF6                       2.597              0.00
+E2             52.109      -29.137    2.645  N-LASF31A                  39.809              0.00
 ```
