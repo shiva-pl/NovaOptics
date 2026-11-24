@@ -63,8 +63,11 @@ def main(quick=False):
 
     # 1. phase-first, aspheric
     t = time.time()
-    p, lay, rec, info = C.design_from_phase(spec, aspheres=True, top_k=1 if quick else 2,
-                                            glass=glass, snap="gradual")
+    # All four architectures are materialized: the aspheric ranking in phase space is
+    # the wrong filter for spherical designs (+-+ spherizes well, the -+- family not).
+    p, lay, rec, info = C.design_from_phase(spec, aspheres=True,
+                                            top_k=1 if quick else len(C.PATTERNS),
+                                            glass=glass, snap="gradual", stop_shift=True)
     record("phase-first, aspheric", p, lay, time.time() - t,
            f"architecture ranking in phase space: {info['architectures']}; chosen {info['chosen']}")
     rec_phase = rec
