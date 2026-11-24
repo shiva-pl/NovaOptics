@@ -165,8 +165,8 @@ def _seidel_core(params, layout: Layout, spec: Spec, beta=1.0, field_frac=1.0):
         CI = Am * ym[j] * dd
         CII = Ac * ym[j] * dd
         rows.append(jnp.stack([SI, SII, SIII, SIV, SV, CI, CII]))
-    return surfs, jnp.stack(rows), dict(ym=ym, y_end=y_end, u_end=u_end, y0c=y0c, ubar=ubar,
-                                        H=H, ymarg=ymarg)
+    return surfs, jnp.stack(rows), dict(ym=ym, upm=upm, yc=yc, upc=upc, y_end=y_end,
+                                        u_end=u_end, y0c=y0c, ubar=ubar, H=H, ymarg=ymarg)
 
 
 def element_waves(params, layout: Layout, spec: Spec, beta=1.0):

@@ -222,8 +222,9 @@ The element plot compares the two current spherical designs.
 
 ## Real glasses
 
-The designs use the **preferred SCHOTT catalog** (`schott2025.AGF`, 130 glasses after
-removing optically identical transmission grades and AR waveguide wafers).
+The designs use the **preferred SCHOTT catalog** (`schott2025.AGF`: 130 preferred
+glasses, 114 after removing optically identical transmission grades and AR
+waveguide wafers; obsolete/inquiry glasses are not used).
 `novaoptics/catalog.py` reads Zemax AGF files: Sellmeier and Schott formulas,
 status codes, validity ranges.
 

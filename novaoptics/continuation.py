@@ -174,6 +174,48 @@ def stage_color(p, lay: Layout, spec: Spec, rec: Recorder, steps=5, iters=40, me
 X_MAX = 4.0
 
 
+def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
+                     virtual_petzval=1.0, k=3, iters=60):
+    """STOP-SHIFT: place the aperture stop once axial color is corrected.
+
+    Stop-shift theory (see stopshift.py) predicts the third-order coma, astigmatism and
+    field curvature for every stop position in closed form; with axial color corrected
+    the lateral color does not depend on the stop.  The `k` best predicted positions
+    and the current one are tried for real: the stop is moved there and the phase
+    system re-optimized with the full real-ray merit.  The best real result is kept, so
+    the stage can only improve the design.
+    """
+    from . import stopshift as SS
+    from .merit import residuals
+
+    sc = SS.scan(p, lay, spec, beta=1.0, virtual_petzval=virtual_petzval)
+    z_now = sc["current_z"]
+    i_now = int(np.argmin(np.abs(sc["z"] - z_now)))
+    cands = SS.candidates(sc, k=k)
+    cfg = make_cfg(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
+                   w_content=mech.w_content)
+    free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
+    best = None
+    for z in [z_now] + [c for c in cands if abs(c - z_now) > 0.5]:
+        q, lq = SS.relayout(p, lay, z)
+        q, _ = optimize(q, lq, spec, cfg, free, iters=iters)
+        cost = float(np.sum(np.asarray(residuals(q, lq, spec, cfg)) ** 2))
+        cost = cost if np.isfinite(cost) else np.inf
+        i = int(np.argmin(np.abs(sc["z"] - z)))
+        if rec.verbose:
+            print(f"      stop at z={z:+7.2f} mm (third-order merit {sc['merit'][i]:9.3g}) "
+                  f"-> real cost {cost:.4g}")
+        if best is None or cost < best[0]:
+            best = (cost, q, lq, z, i)
+    _, q, lq, z, i = best
+    rec.add("stop-shift", 0, q, lq, 1.0,
+            f"stop {z_now:+.1f} -> {z:+.1f} mm (stop_index {lq.stop_index}); third-order "
+            f"merit {sc['merit'][i_now]:.3g} -> {sc['merit'][i]:.3g}; "
+            f"C_I={sc['CI'][i_now]:.2e} (lateral color stop-independent if ~0)",
+            virtual_petzval, extra={"scan": sc})
+    return q, lq
+
+
 def morph_to_params(z, cfg, layout: Layout):
     """Homotopy between an ideal phase screen (s = 0) and a glass singlet (s = 1).
 
@@ -476,7 +518,7 @@ PATTERNS = {
 
 def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1, mech=Mech(),
                           virtual_petzval=1.0, verbose=True, aspheres=False, glass=None,
-                          snap="early"):
+                          snap="early", stop_shift=False):
     """Run DISTRIBUTE + COLOR for several power patterns: cheap, all in phase space."""
     results = []
     for name, pat in patterns.items():
@@ -487,6 +529,9 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
                                   mech=mech, virtual_petzval=virtual_petzval, pattern=pat,
                                   aspheres=aspheres, glass=glass)
         p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
+        if stop_shift:
+            p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech,
+                                      virtual_petzval=virtual_petzval)
         if glass is not None and snap == "early":
             # snap to real glasses while still in phase space: cheap, and the
             # architecture ranking then reflects glasses that actually exist
@@ -506,7 +551,7 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
                       patterns=PATTERNS, top_k=2, aspheres=False, glass=None, snap="early",
-                      morph_iters=30, glass_pull=0.1, verbose=True):
+                      morph_iters=30, glass_pull=0.1, stop_shift=False, verbose=True):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
     `glass`: a catalog.GlassSpace of real catalog glasses.  Continuous stages use
@@ -519,7 +564,7 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
     rec0 = Recorder(spec, verbose=verbose)
     p0, lay0 = stage_ideal(spec, rec0)
     archs = explore_architectures(p0, lay0, spec, patterns, stop_index, mech, virtual_petzval,
-                                  verbose, aspheres, glass, snap)
+                                  verbose, aspheres, glass, snap, stop_shift)
     if verbose:
         print("phase-space ranking:", ", ".join(f"{a['name']} {a['score']:.3f}" for a in archs))
     finals = []

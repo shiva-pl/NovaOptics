@@ -160,12 +160,12 @@ FEAS_FACTOR = 2.5
 EXCLUDE_COMMENTS = ("augmented reality",)
 
 
-def build_glass_space(glasses, wavelengths, k=3, n_grid=16, statuses=(0, 1),
+def build_glass_space(glasses, wavelengths, k=3, n_grid=16, statuses=(1,),
                       feas_radius=None, exclude_comments=EXCLUDE_COMMENTS) -> GlassSpace:
     """PCA of catalog indices over the band spanned by `wavelengths` (plus those exact
     wavelengths, so the design wavelengths are evaluated without interpolation).
 
-    `statuses`: AGF status codes to keep (default standard + preferred).
+    `statuses`: AGF status codes to keep (default: preferred glasses only).
     `exclude_comments`: drop glasses whose AGF comment contains any of these strings;
     by default the AR waveguide wafers (e.g. SCHOTT RealView), which are thin
     substrates rather than bulk lens glass.  Pass () to keep them.
