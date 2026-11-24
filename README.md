@@ -163,35 +163,58 @@ Full prescriptions are in [`examples/output/results.md`](examples/output/results
   free curvature corrections.
 
 `python examples/diagnose.py` writes [`examples/output/diagnostics/report.md`](examples/output/diagnostics/report.md).
-What it showed:
+What it showed, first on the **first version** of the pipeline (thin-lens morph,
+Cauchy glass), which lost to conventional:
 
-| spherical designs | phase-first | conventional |
+| spherical designs, first version | phase-first | conventional |
 |---|---|---|
 | Σ\|W040\| over surfaces | 140 waves | 42 |
 | Σ\|W131\| over surfaces | 520 | 258 |
 | real-ray W040 / W060 | +6.7 / −3.2 | +2.1 / −0.9 |
 | exact axial color F−C | −151 µm | −44 µm |
 
-* The phase-first spherical design **cancels about 3× more spherical aberration and
-  2× more coma**, and balances leftover high-order spherical aberration and axial
-  color with defocus. That is why its field curves sit about 0.3 mm behind the
-  image plane at every field. The conventional Cooke corrects coma element by
-  element (< 15 waves each). The phase-first design cancels −130 / +185 / −50 waves
+* That phase-first spherical design **cancelled about 3× more spherical aberration
+  and 2× more coma**, and balanced leftover high-order spherical aberration and
+  axial color with defocus. That is why its field curves sat about 0.3 mm behind
+  the image plane at every field. The conventional Cooke corrected coma element by
+  element (< 15 waves each). The phase-first design cancelled −130 / +185 / −50 waves
   between elements, which predicts much tighter tolerances.
-* **The cancellation is created in phase space.** Coma and astigmatism content
-  is already 500–1000 waves at the distribute stage, because free aspheric phase
-  lets each screen carry large compensating aberrations at no cost.
-* **The morph is limited by its parameterization, not by convergence.** Running
-  to convergence changes the path merit by < 1%. Adding free curvature
-  corrections lowers it 3–7× (0.355 → 0.051 waves at s = 0.5, 0.663 → 0.168 at
-  s = 1):
+* **The cancellation was created in phase space.** Coma and astigmatism content was
+  already 500–1000 waves at the distribute stage, because free aspheric phase lets
+  each screen carry large compensating aberrations at no cost.
+* **The morph was limited by its parameterization, not by convergence.** Running to
+  convergence changed the path merit by < 1%. Adding free curvature corrections
+  lowered it 3–7× (0.355 → 0.051 waves at s = 0.5, 0.663 → 0.168 at s = 1). That
+  became the default.
 
-| s | recorded | converged | + free curvature |
-|---|---|---|---|
-| 0.25 | 0.187 | 0.186 | 0.167 |
-| 0.50 | 0.355 | 0.352 | 0.051 |
-| 0.75 | 0.608 | 0.608 | 0.207 |
-| 1.00 | 0.663 | 0.665 | 0.168 |
+On the **current** designs (real SCHOTT glass, free-curvature morph, gradual snap):
+
+| current designs | Σ\|W040\| | Σ\|W131\| | Σ\|W222\| | real-ray W040 / W060 | exact axial color F−C |
+|---|---|---|---|---|---|
+| phase-first, aspheric | **102** | **235** | **230** | −0.49 / +0.23 | −62 µm |
+| conventional, aspheric | 320 | 808 | 865 | +0.95 / +0.18 | −100 µm |
+| phase-first, spherical | 63 | 337 | 566 | +3.50 / −1.63 | −124 µm |
+| conventional, spherical | 52 | 296 | 542 | +2.76 / −1.23 | −90 µm |
+
+* The **aspheric phase-first design cancels about 3× less aberration** than the
+  conventional one, on top of the better image quality, so it should also be the
+  more tolerant design.
+* For spherical designs, the cancellation gap shrank from 2–3× to 10–20%.
+* **Path gap now:** the morph carries free curvature, and the remaining gap is
+  convergence. The recorded path sits about 2× above a converged re-optimization
+  (0.220 → 0.113 at s = 0.5, 0.249 → 0.111 at s = 1). The polish and catalog stages
+  recover most of it, but more iterations per morph step are an obvious next step.
+
+| s | recorded | converged |
+|---|---|---|
+| 0.25 | 0.194 | 0.152 |
+| 0.50 | 0.220 | 0.113 |
+| 0.75 | 0.219 | 0.102 |
+| 1.00 | 0.249 | 0.111 |
+
+The morph figure below shows the chosen aspheric architecture (`−++`). Its spherized
+tail is poor, which is why the example takes its spherical design from `+−+`.
+The element plot compares the two current spherical designs.
 
 ![element contributions](examples/output/diagnostics/seidel_elements.png)
 
