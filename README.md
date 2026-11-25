@@ -379,6 +379,10 @@ tests/                       physics and gradient checks
 
 ## Running
 
+JAX runs on the CPU by default (set in `novaoptics/__init__.py`; set `JAX_PLATFORMS`
+to override). The optimization is many small, sequential, latency-bound steps, and on
+a GPU the example ran about 1.5× slower than on the CPU.
+
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"

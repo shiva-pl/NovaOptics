@@ -268,9 +268,11 @@ def morph_to_params(z, cfg, layout: Layout):
 
 def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters=30,
                       mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80,
-                      free_curvature=True, glass_pull=0.0):
+                      free_curvature=True, glass_pull=0.0, xi0=None):
     """Morph phase into glass (see `morph_to_params`).
 
+    xi0: initial bending variable per element (shape factor X = 4 tanh(xi)); default 0,
+    i.e. equiconvex/equiconcave.
     glass_pull > 0 (continuous glasses only): the pull toward real catalog glasses
     ramps up with the morph, nu = glass_pull * s^2, so glass discreteness is turned on
     gradually while the lens takes shape and the final snap is a small step.
@@ -278,7 +280,7 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
     n = lay.n_elem
     z = {
         "phi": -2.0 * p["phase"][:, 0] / lay.r_norm**2,
-        "xi": jnp.zeros(n),
+        "xi": jnp.zeros(n) if xi0 is None else jnp.asarray(xi0, dtype=float),
         "bhi": p["phase"][:, 1:],
         "t": jnp.zeros(n),
         "nd": p["nd"],
