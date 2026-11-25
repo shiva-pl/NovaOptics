@@ -78,7 +78,8 @@ single chief ray per field.
 Both workflows use the **same merit function** (polychromatic RMS wavefront error on
 5 field points, EFL, distortion ≤ 2%, center/edge thicknesses, air gaps, track
 ≤ 80 mm), the **same damped-least-squares optimizer**, the **same glasses** (preferred
-SCHOTT catalog, exact Sellmeier dispersion) and the **same glass selection**. They
+SCHOTT catalog, exact Sellmeier dispersion), the **same glass selection** and the
+**same stop shift**. They
 differ only in where optimization starts:
 
 * **phase-first**: no starting design at all.
@@ -90,20 +91,23 @@ no merit function sampled.
 
 | design | glasses | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [µm] | max distortion | wall time |
 |---|---|---|---|---|---|---|
-| phase-first, aspheric | N-SF66 / N-SK5 / SF6G05 | **0.122** | **0.182** | 3.5 | 0.83% | 449 s |
-| conventional, aspheric | N-LASF44 / N-SF2 / N-LASF44 | 0.174 | 0.233 | 4.4 | 0.65% | 91 s |
-| phase-first, spherical (asphere fade) | N-LASF41 / SF56A / N-LASF31A | **0.281** | **0.372** | 5.8 | 0.71% | 158 s* |
-| conventional, spherical | N-LASF41 / N-SF6 / N-LASF31A | 0.311 | 0.431 | 5.9 | 0.80% | 60 s |
+| phase-first, aspheric | N-SF66 / N-PK51 / SF56A | **0.102** | **0.157** | 2.9 | 0.48% | 1184 s |
+| conventional, aspheric | N-LASF41 / N-SF5 / N-LASF44 | 0.184 | 0.213 | 4.5 | 0.24% | 153 s |
+| phase-first, spherical (asphere fade) | N-LASF41 / SF56A / N-LASF31A | **0.281** | **0.372** | 5.8 | 0.71% | 243 s* |
+| conventional, spherical | N-LASF41 / N-SF6 / N-LASF31A | 0.311 | 0.431 | 5.9 | 0.80% | 73 s |
 
-The aspheric phase-first design comes from the `−++` architecture, which became a
-`−+−` form (a flint meniscus, a strong N-SK5 positive and a flint). The spherical
-one comes from `+−+`, a Cooke-type triplet found without being given that form.
+Both aspheric designs get a stop shift on the glass system (see *Stop shift*); neither
+spherical design does. The aspheric phase-first design comes from the `−++`
+architecture, which became a `−+−` form (a flint meniscus, a strong N-PK51 positive and
+a flint). The spherical one comes from `+−+`, a Cooke-type triplet found without being
+given that form. All four architectures are materialized: ranking by the aspheric
+phase-space merit is the wrong filter for spherical designs.
 
 History of these numbers: the first version (thin-lens morph, two-term Cauchy glass)
 reached 0.186 / 0.260 and 0.344 / 0.444 and lost to conventional on the mean. Free
 curvature in the morph (see *Diagnostics*), real catalog glass with a
-catalog-derived dispersion model, and gradual glass snapping (see *Real glasses*)
-account for the difference.
+catalog-derived dispersion model, gradual glass snapping (see *Real glasses*) and a
+stop shift on the glass system account for the difference.
 
 \* on top of the aspheric run. Times are on 4 CPU cores and include JIT compilation.
 Full prescriptions are in [`examples/output/results.md`](examples/output/results.md).
@@ -118,7 +122,8 @@ Full prescriptions are in [`examples/output/results.md`](examples/output/results
 
 * **Without a starting design, the pipeline now beats conventional multi-start from a
   known form**, on both mean and worst-field error, aspheric and spherical, with the
-  same real glasses: 0.122 vs 0.174 (aspheric) and 0.281 vs 0.311 (spherical) mean. Conventional optimization from the *right* form (a
+  same real glasses and the same stop shift: 0.102 vs 0.184 (aspheric) and 0.281 vs
+  0.311 (spherical) mean. Conventional optimization from the *right* form (a
   Cooke triplet) is strong, but only 2 of 12 perturbed Cooke starts converged
   usefully, which shows how much that form knowledge and that luck matter.
 * **The first version lost to conventional.** The improvement came from a
