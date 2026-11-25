@@ -356,6 +356,42 @@ WFE on the dense grid:
   the axial-color-first ordering remain available (`stop_shift=True`). They are what
   made `++−` competitive in phase space.
 
+## Element bending
+
+A phase screen carries only an element's net optical path. How the glass element is
+bent (biconvex, meniscus, ...) has to be found during the morph.
+
+**Lock-in is real.** One phase design, morphed from eight starting bendings (shape
+factors X): five ended at 0.101–0.114 waves, three at 0.224–0.306. Elements 2 and 3
+always converge to the same shape. Element 1 lands in one of two basins (X ≈ +1.7 or
+X ≈ +5…+7), and which one depends on the starting combination in a way that is hard to
+predict.
+
+**What did not work, and why:**
+
+* **Two separated phase screens per element** (front and back face; `two_screens=True`,
+  validated in tracer and Seidel trace). Splitting the power between them changes coma
+  by only 6–20%, where bending a glass lens of the same power changes it ~10× and flips
+  its sign. Ideal screens act like lenses of infinite index, and thin-lens shape
+  dependence vanishes as n → ∞. The split carries almost no bending information.
+* **A third-order bending scan before the morph** (`bending.py`, 3,375 combinations in
+  1 s). Its predictions do not correlate with the outcome: the morph moves the bending a
+  long way. Seeding the morph with the scan's top picks gave 0.139 / 0.114 / 0.247, no
+  better than blind starts.
+* **Third-order theory after the morph** cannot choose either. A design in the bad
+  basin is fully corrected in third order (each element's scan has a single minimum at
+  its current bending). The basins differ in **fifth-order** residuals.
+
+**What works: bending hops** (`stage_bending_hops`). Re-bend each element to a few
+alternative shapes, re-polish with the real-ray merit, keep improvements. A short
+polish from a forced bending reaches the good basin: the 0.306 design goes to 0.100
+when element 1 is forced to X = 1.7, 3.0 or 4.5, and to 0.112 with the greedy hops.
+In the full pipeline, though, the default morph already lands well, and hops did not
+improve the final designs (0.106 / 0.161 aspheric and 0.307 / 0.394 spherical, vs.
+0.102 / 0.157 and 0.281 / 0.372 without them, at +17% run time). They are therefore an
+off-by-default option (`bending_hops=True`): insurance against a bad basin, not a gain
+when the morph already did well.
+
 ## Layout
 
 ```
@@ -363,6 +399,7 @@ novaoptics/
   glass.py         glass models: (n_d, V_d) Cauchy / normal-glass, PCA dispatch
   catalog.py       AGF reader, PCA glass space, normal-glass regression
   stopshift.py     stop-shift relations, stop-position scan, relayout
+  bending.py       bending scan (third order), element re-bending
   system.py        Layout / Spec / parameter pytree, prescription printout
   trace.py         differentiable ray tracer: sphere + asphere + phase interface
   analysis.py      wavefront error, spot, EFL, distortion, AD field curves
