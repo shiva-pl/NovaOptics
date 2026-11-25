@@ -1,22 +1,22 @@
 | design | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [um] | max distortion | time [s] |
 |---|---|---|---|---|---|
-| phase-first, aspheric | 0.122 | 0.182 | 3.5 | 0.83% | 449 |
-| phase-first, spherical (asphere fade) | 0.281 | 0.372 | 5.8 | 0.71% | 158 |
-| conventional, aspheric | 0.174 | 0.233 | 4.4 | 0.65% | 91 |
-| conventional, spherical | 0.311 | 0.431 | 5.9 | 0.80% | 60 |
+| phase-first, aspheric | 0.102 | 0.157 | 2.9 | 0.48% | 1184 |
+| phase-first, spherical (asphere fade) | 0.281 | 0.372 | 5.8 | 0.71% | 243 |
+| conventional, aspheric | 0.184 | 0.213 | 4.5 | 0.24% | 153 |
+| conventional, spherical | 0.311 | 0.431 | 5.9 | 0.80% | 73 |
 
 All figures evaluated on 21 field points (0-20 deg) x 8x16 pupil samples, F/d/C, after optimization on 5 field points x 6x12 pupil samples.
 
 ## phase-first, aspheric
 
-architecture ranking in phase space: [('-++', 0.15509337534138173), ('+-+', 0.3577702056890844), ('+++', 0.3699279679140329), ('++-', 0.6555283692820657)]; chosen -++
+architecture ranking in phase space: [('-++', 0.15509337534086154), ('+-+', 0.3577702056942067), ('+++', 0.36992796792157323), ('++-', 0.6555283692797309)]; chosen -++
 
 ```
 item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]
-E0            -59.818    -435.642*    2.000  N-SF66                      8.094              0.00
-STOP                                                                    -0.000
-E1             46.954     -25.728*    8.000  N-SK5                      34.004              0.00
-E2            -16.728     -39.162*    2.000  SF6G05                     10.179              0.00
+E0           -127.697     596.618*    3.830  N-SF66                     10.324              0.00
+STOP                                                                     2.537
+E1             39.939     -28.858*    8.000  N-PK51                     33.934              0.00
+E2            -17.131     -44.971*    2.000  SF56A                       9.403              0.00
 * rear surface is an even asphere
 ```
 
@@ -38,10 +38,10 @@ E2             48.594      -26.926    2.669  N-LASF31A                  40.634  
 
 ```
 item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]
-E0             24.447    -101.017*    4.153  N-LASF44                    0.657              0.00
-STOP                                                                     1.418
-E1            -19.574      13.758*    2.000  N-SF2                       1.292              0.00
-E2             21.996     -45.044*    7.083  N-LASF44                   41.921              0.00
+STOP                                                                     1.130
+E0             31.535     -75.648*    4.195  N-LASF41                    2.525              0.00
+E1            -16.532      19.257*    2.000  N-SF5                       1.251              0.00
+E2             41.555     -24.267*    5.416  N-LASF44                   45.238              0.00
 * rear surface is an even asphere
 ```
 
