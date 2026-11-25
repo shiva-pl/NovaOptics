@@ -192,30 +192,32 @@ Cauchy glass), which lost to conventional:
   lowered it 3–7× (0.355 → 0.051 waves at s = 0.5, 0.663 → 0.168 at s = 1). That
   became the default.
 
-On the **current** designs (real SCHOTT glass, free-curvature morph, gradual snap):
+On the **current** designs (real SCHOTT glass, free-curvature morph, gradual snap,
+stop shift on the glass system for both aspheric designs):
 
 | current designs | Σ\|W040\| | Σ\|W131\| | Σ\|W222\| | real-ray W040 / W060 | exact axial color F−C |
 |---|---|---|---|---|---|
-| phase-first, aspheric | **102** | **235** | **230** | −0.49 / +0.23 | −62 µm |
-| conventional, aspheric | 320 | 808 | 865 | +0.95 / +0.18 | −100 µm |
+| phase-first, aspheric | **64** | **190** | **186** | +0.55 / −0.33 | −58 µm |
+| conventional, aspheric | 228 | 553 | 711 | −4.78 / +5.73 | −281 µm |
 | phase-first, spherical | 63 | 337 | 566 | +3.50 / −1.63 | −124 µm |
 | conventional, spherical | 52 | 296 | 542 | +2.76 / −1.23 | −90 µm |
 
-* The **aspheric phase-first design cancels about 3× less aberration** than the
-  conventional one, on top of the better image quality, so it should also be the
-  more tolerant design.
+* The **aspheric phase-first design cancels 3.5–3.8× less aberration** than the
+  conventional one. It balances far less high-order spherical aberration and has a
+  fifth of the axial color, on top of the better image quality, so it should also
+  be the more tolerant design.
 * For spherical designs, the cancellation gap shrank from 2–3× to 10–20%.
 * **Path gap now:** the morph carries free curvature, and the remaining gap is
-  convergence. The recorded path sits about 2× above a converged re-optimization
-  (0.220 → 0.113 at s = 0.5, 0.249 → 0.111 at s = 1). The polish and catalog stages
-  recover most of it, but more iterations per morph step are an obvious next step.
+  convergence. Mid-morph the recorded path sits up to 1.8× above a converged
+  re-optimization; by the end of the morph the gap has nearly closed (0.186 vs
+  0.168 at s = 1). More iterations per morph step remain an easy next step.
 
 | s | recorded | converged |
 |---|---|---|
-| 0.25 | 0.194 | 0.152 |
-| 0.50 | 0.220 | 0.113 |
-| 0.75 | 0.219 | 0.102 |
-| 1.00 | 0.249 | 0.111 |
+| 0.25 | 0.195 | 0.142 |
+| 0.50 | 0.200 | 0.113 |
+| 0.75 | 0.193 | 0.106 |
+| 1.00 | 0.186 | 0.168 |
 
 The morph figure below shows the chosen aspheric architecture (`−++`). Its spherized
 tail is poor, which is why the example takes its spherical design from `+−+`.
