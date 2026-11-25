@@ -43,6 +43,9 @@ class Layout:
     r_norm: float = 10.0
     z_launch: float = -20.0  # launch plane for rays, in front of the first item
     aspheres: bool = False  # even aspheric terms (orders 4..2*n_phase) on rear surfaces
+    # Two-screen elements: an ideal phase screen on the front surface too ("phase1").
+    # With real thickness, how the power is split between the screens is the bending.
+    two_screens: bool = False
     glass: object = None  # catalog.GlassSpace -> PCA glass coordinates; None -> (n_d, V_d)
     region: object = None  # catalog.GlassSpace whose (n_d, V_d) hull bounds Cauchy glasses
 
@@ -92,6 +95,7 @@ def new_params(layout: Layout, gaps=None, bfd=50.0, nd=1.62, vd=50.0):
         "vd": jnp.full(n, vd),
         "phase": jnp.zeros((n, layout.n_phase)),
         "asph": jnp.zeros((n, layout.n_phase - 1)),
+        **({"phase1": jnp.zeros((n, layout.n_phase))} if layout.two_screens else {}),
         **({"g": jnp.zeros((n, layout.glass.k)),
             "gr": jnp.zeros((n, len(layout.glass.grid)))} if layout.glass is not None else {}),
         "gaps": jnp.asarray(gaps if gaps is not None else np.full(n, 5.0), dtype=float),

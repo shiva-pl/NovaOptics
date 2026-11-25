@@ -119,6 +119,8 @@ def rear_sag(params, layout: Layout, i, r):
 
 def virtual_petzval_curvature(params, layout: Layout):
     phi_phase = -2.0 * params["phase"][:, 0] / layout.r_norm**2
+    if layout.two_screens:
+        phi_phase = phi_phase - 2.0 * params["phase1"][:, 0] / layout.r_norm**2
     return jnp.sum(phi_phase / G.nd_vec(params, layout))
 
 
@@ -183,7 +185,10 @@ def residuals(params, layout: Layout, spec: Spec, cfg):
     # --- continuation penalties ---
     lam_mm = spec.ref_wavelength * 1e-3
     # only aspheric (k >= 2) phase is penalized; the quadratic term is optical power
-    r_phase = jnp.sqrt(cfg["mu"]) * (params["phase"][:, 1:] / lam_mm).ravel()
+    hi = params["phase"][:, 1:]
+    if layout.two_screens:
+        hi = jnp.concatenate([hi, params["phase1"][:, 1:]], axis=1)
+    r_phase = jnp.sqrt(cfg["mu"]) * (hi / lam_mm).ravel()
     r_asph = jnp.sqrt(cfg["mu_asph"]) * (
         params["asph"] * (params["nd"][:, None] - 1.0) / lam_mm).ravel()
 

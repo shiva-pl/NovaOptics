@@ -143,12 +143,14 @@ def trace_ray(params, layout: Layout, wavelength, beta, origin, direction, c_img
             i = item
             n = G.index_at(params, i, wavelength, beta, layout)
             nd_i = G.index_at(params, i, G.LAMBDA_D, 0.0, layout)
-            pos, d, opl, h1 = interface(pos, d, opl, z, params["c1"][i], 1.0, n)
+            # Phase screens disperse like a thin lens of the element's glass:
+            # W(lambda) = W * (n(lambda) - 1) / (n_d - 1).  With beta = 0 they are achromatic.
+            kappa = (n - 1.0) / (nd_i - 1.0)
+            ph1 = params["phase1"][i] * kappa if layout.two_screens else None
+            pos, d, opl, h1 = interface(pos, d, opl, z, params["c1"][i], 1.0, n, ph1,
+                                        layout.r_norm)
             pts += [pos]
             z = z + params["t"][i]
-            # The phase screen disperses like a thin lens of the element's glass:
-            # W(lambda) = W * (n(lambda) - 1) / (n_d - 1).  With beta = 0 it is achromatic.
-            kappa = (n - 1.0) / (nd_i - 1.0)
             asph = params["asph"][i] if layout.aspheres else None
             pos, d, opl, h2 = interface(
                 pos, d, opl, z, params["c2"][i], n, 1.0, params["phase"][i] * kappa, layout.r_norm,
