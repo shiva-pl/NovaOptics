@@ -86,7 +86,7 @@ def candidates(combos, merit, k=3, min_dist=1.5):
 
 def rebend(p, i, X):
     """Element i re-bent to shape factor X, keeping c1 - c2 (its thin-lens power)."""
-    c1, c2 = np.asarray(p["c1"], float), np.asarray(p["c2"], float)
+    c1, c2 = np.array(p["c1"], dtype=float), np.array(p["c2"], dtype=float)  # copies
     dc = c1[i] - c2[i]
     c1[i], c2[i] = 0.5 * (1.0 + X) * dc, 0.5 * (X - 1.0) * dc
     return dict(p, c1=jnp.asarray(c1), c2=jnp.asarray(c2))

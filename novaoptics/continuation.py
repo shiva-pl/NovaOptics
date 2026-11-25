@@ -228,6 +228,51 @@ def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
     return q, lq
 
 
+def stage_bending_hops(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
+                       X_alt=(-3.0, -1.5, 0.0, 1.5, 3.0), iters=100, label="bending hops"):
+    """Basin hopping over element bendings on a glass system.
+
+    The morph picks each element's bending basin early, when bending barely matters,
+    and cannot leave it later.  Both basins can be fully corrected in third order (the
+    bad one differs in fifth-order residuals), so third-order theory cannot choose
+    between them, but the real-ray merit can.  For each element in turn it is re-bent to
+    each shape factor in `X_alt` (power c1 - c2 kept), the system re-polished, and any
+    improvement of the merit kept (greedy).
+    """
+    from .bending import rebend
+    from .merit import residuals
+
+    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
+                   w_content=mech.w_content)
+    free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
+
+    def cost(q):
+        c = float(np.sum(np.asarray(residuals(q, lay, spec, cfg)) ** 2))
+        return c if np.isfinite(c) else np.inf
+
+    def shape(q, i):
+        c1, c2 = float(q["c1"][i]), float(q["c2"][i])
+        return (c1 + c2) / (c1 - c2) if c1 != c2 else 0.0
+
+    best, best_cost = p, cost(p)
+    rec.add(label, 0, p, lay, 1.0, "before")
+    moves = []
+    for i in range(lay.n_elem):
+        X_now = shape(best, i)
+        for X in X_alt:
+            if abs(X - X_now) < 0.75:
+                continue
+            q, _ = optimize(rebend(best, i, X), lay, spec, cfg, free, iters=iters)
+            c = cost(q)
+            if c < best_cost:
+                moves.append(f"E{i} {X_now:+.1f}->{shape(q, i):+.1f}")
+                best, best_cost = q, c
+                X_now = shape(best, i)
+    rec.add(label, 1, best, lay, 1.0,
+            "kept: " + (", ".join(moves) if moves else "no improving hop"))
+    return best, lay
+
+
 def morph_to_params(z, cfg, layout: Layout):
     """Homotopy between an ideal phase screen (s = 0) and a glass singlet (s = 1).
 
@@ -490,7 +535,7 @@ def fade_aspheres(z, cfg, layout: Layout):
 
 
 def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40, mech=Mech(),
-                   mu_a=1e-4, polish_iters=150, stop_shift=False):
+                   mu_a=1e-4, polish_iters=150, stop_shift=False, bending_hops=False):
     """Aspheric design -> all-spherical design, by fading the aspheres out.
 
     The optimizer re-balances curvatures, thicknesses, spacings and glasses while
@@ -519,6 +564,8 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
     free = {k: True for k in _glass_vars(lay_s, glass=False)}
     p, _ = optimize(p, lay_s, spec, make_cfg(**base), free, iters=polish_iters)
     rec.add("spherize", steps + 1, p, lay_s, 1.0, "all-spherical polish")
+    if bending_hops:
+        p, lay_s = stage_bending_hops(p, lay_s, spec, rec, mech=mech)
     if stop_shift:
         p, lay_s = stage_stop_shift(p, lay_s, spec, rec, mech=mech, phase=False)
     return stage_catalog(p, lay_s, spec, rec, mech=mech)
@@ -592,7 +639,7 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
                       patterns=PATTERNS, top_k=2, aspheres=False, glass=None, snap="early",
                       morph_iters=30, glass_pull=0.1, stop_shift=False, glass_stop_shift=False,
-                      verbose=True):
+                      bending_hops=False, verbose=True):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
     `glass`: a catalog.GlassSpace of real catalog glasses.  Continuous stages use
@@ -606,6 +653,8 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
     architecture tries color by merit and axial color first, keeping the better.
     glass_stop_shift: the same on the materialized glass system, before the catalog
     stage (stop in air gaps, real thicknesses).
+    bending_hops: after the morph, re-bend each element to a few alternative shapes and
+    keep any real-merit improvement (`stage_bending_hops`).
     """
     rec0 = Recorder(spec, verbose=verbose)
     p0, lay0 = stage_ideal(spec, rec0)
@@ -622,6 +671,8 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         p, lay = stage_materialize(a["params"], a["layout"], spec, rec, mech=mech,
                                    virtual_petzval=virtual_petzval, iters=morph_iters,
                                    glass_pull=glass_pull if snap == "gradual" else 0.0)
+        if bending_hops:
+            p, lay = stage_bending_hops(p, lay, spec, rec, mech=mech)
         if glass_stop_shift:
             p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech, phase=False)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
