@@ -80,3 +80,39 @@ def candidates(combos, merit, k=3, min_dist=1.5):
         if len(out) == k:
             break
     return [(combos[i], float(merit[i])) for i in out]
+
+
+# ------------------------------------------------------------- after the morph
+
+def rebend(p, i, X):
+    """Element i re-bent to shape factor X, keeping c1 - c2 (its thin-lens power)."""
+    c1, c2 = np.asarray(p["c1"], float), np.asarray(p["c2"], float)
+    dc = c1[i] - c2[i]
+    c1[i], c2[i] = 0.5 * (1.0 + X) * dc, 0.5 * (X - 1.0) * dc
+    return dict(p, c1=jnp.asarray(c1), c2=jnp.asarray(c2))
+
+
+def element_scan(p, lay: Layout, spec: Spec, i, grid=np.linspace(-8, 8, 161)):
+    """Third-order merit of the actual (thick) system with element i re-bent."""
+    def f(X):
+        c1, c2 = p["c1"], p["c2"]
+        dc = c1[i] - c2[i]
+        q = dict(p, c1=c1.at[i].set(0.5 * (1.0 + X) * dc), c2=c2.at[i].set(0.5 * (X - 1.0) * dc))
+        _, S, _ = _seidel_core(q, lay, spec, 1.0)
+        W = _to_w(S.sum(0), spec.ref_wavelength * 1e-3)
+        return jnp.sum((jnp.stack([W[0], W[1], W[2], W[3]]) * jnp.asarray(RMS_WEIGHTS)) ** 2)
+    m = np.asarray(jax.jit(jax.vmap(f))(jnp.asarray(grid)))
+    return grid, np.where(np.isfinite(m), m, np.inf)
+
+
+def basins(grid, merit, current, k=2, min_dist=1.0):
+    """Local minima of an element scan, best first, excluding the current bending."""
+    idx = [j for j in range(1, len(grid) - 1) if merit[j] <= merit[j - 1] and merit[j] <= merit[j + 1]]
+    idx.sort(key=lambda j: merit[j])
+    out = []
+    for j in idx:
+        if abs(grid[j] - current) >= min_dist and all(abs(grid[j] - x) >= min_dist for x in out):
+            out.append(float(grid[j]))
+        if len(out) == k:
+            break
+    return out
