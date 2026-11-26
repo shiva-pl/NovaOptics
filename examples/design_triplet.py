@@ -4,7 +4,7 @@ Runs the phase-first pipeline and the conventional baseline on the same merit,
 constraints and optimizer, then judges every result on a dense 21-point field
 grid that no merit function sampled.
 
-    python examples/design_triplet.py            # full run, ~15-20 min on 4 CPU cores
+    python examples/design_triplet.py            # full run, ~3-5 min on 4 CPU cores
     python examples/design_triplet.py --quick    # fewer starts / steps, for smoke tests
 
 Outputs go to examples/output/.
@@ -32,7 +32,7 @@ from novaoptics import plot as P  # noqa: E402
 from novaoptics.baseline import conventional  # noqa: E402
 from novaoptics.optimize import STATS  # noqa: E402
 from novaoptics.parallel import pmap  # noqa: E402
-from novaoptics.system import Spec, describe, to_numpy  # noqa: E402
+from novaoptics.system import Spec, describe, layout_dict, to_numpy  # noqa: E402
 
 OUT = Path(__file__).parent / "output"
 AGF = Path(__file__).parents[1] / "schott2025.AGF"
@@ -58,7 +58,7 @@ def main(quick=False):
         rows.append({"design": name, "mean_wfe": rep["mean_wfe"], "max_wfe": rep["max_wfe"],
                      "mean_spot_um": float(rep["rms_spot_um"].mean()), "efl": rep["efl"],
                      "max_distortion": rep["max_distortion"], "seconds": seconds, "note": note,
-                     "prescription": describe(p, lay, spec),
+                     "prescription": describe(p, lay, spec), "layout": layout_dict(lay),
                      "params": {k: v.tolist() for k, v in to_numpy(p).items()}})
         print(f"\n### {name}  (dense grid: mean {rep['mean_wfe']:.3f}, max {rep['max_wfe']:.3f} "
               f"waves, {seconds:.0f} s)\n{describe(p, lay, spec)}\n", flush=True)

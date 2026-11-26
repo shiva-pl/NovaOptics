@@ -91,10 +91,10 @@ no merit function sampled.
 
 | design | glasses | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [µm] | max distortion | wall time |
 |---|---|---|---|---|---|---|
-| phase-first, aspheric | N-SF66 / N-PK51 / SF56A | **0.102** | **0.157** | 2.9 | 0.51% | 84 s |
+| phase-first, aspheric | N-SF66 / N-PK51 / SF56A | **0.102** | **0.157** | 2.9 | 0.51% | 87 s |
 | conventional, aspheric | N-LASF41 / N-SF5 / N-LASF44 | 0.184 | 0.213 | 4.5 | 0.24% | 31 s |
-| phase-first, spherical (asphere fade) | N-LASF41 / SF56A / N-LASF31A | **0.281** | **0.372** | 5.8 | 0.71% | 22 s* |
-| conventional, spherical | N-LASF41 / N-SF6 / N-LASF31A | 0.311 | 0.431 | 5.9 | 0.80% | 9 s |
+| phase-first, spherical (asphere fade) | N-LASF41 / SF56A / N-LASF31A | **0.281** | **0.372** | 5.8 | 0.71% | 23 s* |
+| conventional, spherical | N-LASF41 / N-SF6 / N-LASF31A | 0.311 | 0.431 | 5.9 | 0.80% | 10 s |
 
 Both aspheric designs get a stop shift on the glass system (see *Stop shift*); neither
 spherical design does. The aspheric phase-first design comes from the `−++`
@@ -110,7 +110,8 @@ catalog-derived dispersion model, gradual glass snapping (see *Real glasses*) an
 stop shift on the glass system account for the difference.
 
 \* on top of the aspheric run. Times are on 4 CPU cores with a warm JAX compilation
-cache (see *Performance*); the whole example takes 280 s from a cold cache.
+cache (see *Performance*); the whole example takes about 3 min (280 s from a cold
+cache).
 Full prescriptions are in [`examples/output/results.md`](examples/output/results.md).
 
 ![performance, spherical](examples/output/performance_spherical.png)
@@ -198,27 +199,29 @@ stop shift on the glass system for both aspheric designs):
 
 | current designs | Σ\|W040\| | Σ\|W131\| | Σ\|W222\| | real-ray W040 / W060 | exact axial color F−C |
 |---|---|---|---|---|---|
-| phase-first, aspheric | **64** | **190** | **186** | +0.55 / −0.33 | −58 µm |
-| conventional, aspheric | 228 | 553 | 711 | −4.78 / +5.73 | −281 µm |
+| phase-first, aspheric | **65** | **187** | **183** | +0.59 / −0.35 | −58 µm |
+| conventional, aspheric | 272 | 694 | 743 | +2.00 / −0.50 | −137 µm |
 | phase-first, spherical | 63 | 337 | 566 | +3.50 / −1.63 | −124 µm |
 | conventional, spherical | 52 | 296 | 542 | +2.76 / −1.23 | −90 µm |
 
-* The **aspheric phase-first design cancels 3.5–3.8× less aberration** than the
-  conventional one. It balances far less high-order spherical aberration and has a
-  fifth of the axial color, on top of the better image quality, so it should also
-  be the more tolerant design.
+* The **aspheric phase-first design cancels 3.7–4.2× less aberration** than the
+  conventional one. It balances less high-order spherical aberration and has less
+  than half the axial color, on top of the better image quality, so it should also
+  be the more tolerant design. (An earlier version of this table evaluated the
+  conventional aspheric design with the stop in the wrong place; results.json now
+  stores each design's layout.)
 * For spherical designs, the cancellation gap shrank from 2–3× to 10–20%.
 * **Path gap now:** the morph carries free curvature, and the remaining gap is
-  convergence. Mid-morph the recorded path sits up to 1.8× above a converged
-  re-optimization; by the end of the morph the gap has nearly closed (0.186 vs
-  0.168 at s = 1). More iterations per morph step remain an easy next step.
+  convergence. Mid-morph the recorded path sits up to 2.4× above a converged
+  re-optimization; by the end of the morph the gap has nearly closed (0.192 vs
+  0.170 at s = 1). More iterations per morph step remain an easy next step.
 
 | s | recorded | converged |
 |---|---|---|
-| 0.25 | 0.195 | 0.142 |
-| 0.50 | 0.200 | 0.113 |
-| 0.75 | 0.193 | 0.106 |
-| 1.00 | 0.186 | 0.168 |
+| 0.25 | 0.200 | 0.145 |
+| 0.50 | 0.275 | 0.115 |
+| 0.75 | 0.192 | 0.113 |
+| 1.00 | 0.192 | 0.170 |
 
 The morph figure below shows the chosen aspheric architecture (`−++`). Its spherized
 tail is poor, which is why the example takes its spherical design from `+−+`.
@@ -426,6 +429,30 @@ forward-mode dual numbers vectorized over rays could plausibly give another 2–
 the Jacobians, at the cost of re-implementing the tracer, the asphere and aiming
 derivatives and the merit. That is deferred until the method has settled.
 
+## GUI
+
+```bash
+pip install -e ".[gui]"
+novaoptics-gui                                   # or: python -m novaoptics.gui
+novaoptics-gui examples/output/results.json      # open saved designs
+```
+
+A PySide6 front end for the pipeline. Set the specification, the workflow
+(phase-first or conventional multi-start), architectures, catalog, manufacturing
+limits and threads, then **Run**. The run happens in a background thread, and every
+recorded pipeline step streams into the **Layout** tab while it runs: the phase
+screens turn into glass live (dashed magenta = ideal phase that remains). After the
+run, the slider scrubs through every step of a design's path. **Merit** shows the
+trajectory (one line per architecture while running), **Performance** compares the
+selected designs on a dense field grid (RMS wavefront error, spot, AD field curves,
+distortion), and **Prescription** and **Log** show the details. **Stop** takes
+effect within one optimizer step. Designs can be saved and reopened as JSON, including
+their layout and catalog, and figures can be exported.
+
+![GUI during a run](docs/gui_live_morph.png)
+
+![GUI comparing designs](docs/gui_performance.png)
+
 ## Layout
 
 ```
@@ -443,6 +470,9 @@ novaoptics/
   continuation.py  the pipeline stages and architecture search
   baseline.py      conventional multi-start baseline
   plot.py          layouts, film strips, merit trajectory, performance plots
+  progress.py      snapshot listeners and cooperative cancel (for front ends)
+  gui/runner.py    Qt-free run options, jobs, evaluation, JSON save/load
+  gui/app.py       PySide6 main window
 examples/design_triplet.py   runs everything, writes examples/output/
 examples/diagnose.py         diagnostics report and figures
 tests/                       physics and gradient checks

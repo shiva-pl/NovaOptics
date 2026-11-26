@@ -159,6 +159,22 @@ def glass_label(p, layout, i):
     return f"pca({p['nd'][i]:.4f}/{p['vd'][i]:.1f})"
 
 
+def layout_dict(layout: Layout) -> dict:
+    """JSON-friendly layout; the glass catalog is stored separately (by file)."""
+    return {"n_elem": layout.n_elem, "stop_index": layout.stop_index,
+            "n_phase": layout.n_phase, "r_norm": layout.r_norm, "z_launch": layout.z_launch,
+            "aspheres": layout.aspheres, "exact_glass": layout.glass is not None}
+
+
+def layout_from_dict(d: dict, glass=None) -> Layout:
+    """Inverse of `layout_dict`; `glass` is the catalog GlassSpace when exact_glass."""
+    d = dict(d)
+    exact = d.pop("exact_glass", False)
+    if exact and glass is None:
+        raise ValueError("this layout uses exact catalog glasses: a catalog is needed")
+    return Layout(glass=glass if exact else None, **d)
+
+
 def describe(params, layout: Layout, spec: Spec | None = None) -> str:
     """Human-readable prescription."""
     p = to_numpy(G.resolve(params, layout))

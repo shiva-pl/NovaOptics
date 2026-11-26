@@ -12,7 +12,7 @@ from matplotlib.patches import Polygon
 from . import analysis as A
 from .merit import sag
 from .system import Layout, Spec, vertex_positions
-from .trace import asphere_poly, launch, trace_ray
+from .trace import launch, trace_ray
 
 # Reference categorical palette (light mode), slots in fixed order.
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
@@ -49,18 +49,41 @@ def meridional_rays(params, layout: Layout, spec: Spec, beta=1.0, n_rays=7, frac
 
         return jax.vmap(one)(py)
 
-    return np.asarray(jax.vmap(per_field)(thetas))
+    return jax.vmap(per_field)(thetas)
 
 
-def draw_layout(ax, params, layout: Layout, spec: Spec, beta=1.0, title=None, sd=None):
+_GEOM_JIT: dict = {}
+
+
+def layout_geometry(params, layout: Layout, spec: Spec, beta=1.0):
+    """Clear semi-diameters and meridional ray paths for drawing (compiled per layout)."""
+    key = (layout, spec)
+    if key not in _GEOM_JIT:
+        if len(_GEOM_JIT) > 32:
+            _GEOM_JIT.clear()
+
+        def geom(p, b):
+            sd = A.clear_semi_diameters(A.evaluate(p, layout, spec, b))
+            return sd, meridional_rays(p, layout, spec, b)
+
+        _GEOM_JIT[key] = jax.jit(geom)
+    sd, paths = _GEOM_JIT[key](params, jnp.asarray(beta, float))
+    return np.asarray(sd), np.asarray(paths)
+
+
+def draw_layout(ax, params, layout: Layout, spec: Spec, beta=1.0, title=None, sd=None,
+                geometry=None):
+    """Glass elements, residual phase screens, stop, image plane and meridional rays.
+
+    `geometry` = layout_geometry(...) output, when computed elsewhere (e.g. off the GUI
+    thread)."""
     from .glass import resolve
 
     p = {k: np.asarray(v) for k, v in resolve(params, layout).items()}
-    if sd is None:
-        ev = A.evaluate(params, layout, spec, beta)
-        sd = np.asarray(A.clear_semi_diameters(ev))
+    sd_g, paths = geometry if geometry is not None else layout_geometry(params, layout, spec,
+                                                                        beta)
+    sd = sd_g if sd is None else sd
     vp = vertex_positions(params, layout)
-    paths = meridional_rays(params, layout, spec, beta)
     for f in range(paths.shape[0]):
         for r in range(paths.shape[1]):
             ax.plot(paths[f, r, :, 2], paths[f, r, :, 1], color=SERIES[f], lw=0.6, alpha=0.85)
@@ -71,8 +94,8 @@ def draw_layout(ax, params, layout: Layout, spec: Spec, beta=1.0, title=None, sd
         s1 = np.asarray(sag(p["c1"][i], np.abs(y)))
         s2 = np.asarray(sag(p["c2"][i], np.abs(y)))
         if layout.aspheres:
-            s2 = s2 + np.array([float(asphere_poly(jnp.asarray(p["asph"][i]), yy * yy,
-                                                   layout.r_norm)[0]) for yy in y])
+            rho = (y / layout.r_norm) ** 2
+            s2 = s2 + sum(a * rho ** (k + 2) for k, a in enumerate(p["asph"][i]))
         glassy = abs(p["c1"][i]) + abs(p["c2"][i]) > 1e-6 or p["t"][i] > 1e-3
         if glassy:
             poly = np.c_[np.r_[z1 + s1, (z2 + s2)[::-1]], np.r_[y, y[::-1]]]
@@ -121,15 +144,15 @@ def film_strip(snaps, spec: Spec, path, ncols=2):
     plt.close(fig)
 
 
-def trajectory(recs, labels, path):
-    """Mean RMS WFE along the pipeline, one line per recorder, stages shaded."""
-    fig, ax = plt.subplots(figsize=(8, 3.4), facecolor=SURFACE)
+def draw_trajectory(ax, series, log=True):
+    """Mean RMS WFE along the pipeline: `series` = [(label, snapshots)], one line each;
+    the stages of the first series are shaded and labelled."""
     _style(ax)
-    for j, (rec, lab) in enumerate(zip(recs, labels)):
-        y = [s.mean_wfe for s in rec.snaps]
-        ax.plot(range(len(y)), y, color=SERIES[j], lw=2, marker="o", ms=3.5, label=lab)
-    rec = recs[0]
-    stages = [s.stage for s in rec.snaps]
+    for j, (lab, snaps) in enumerate(series):
+        y = [s.mean_wfe for s in snaps]
+        ax.plot(range(len(y)), y, color=SERIES[j % len(SERIES)], lw=2, marker="o", ms=3.5,
+                label=lab)
+    stages = [s.stage for s in series[0][1]] if series else []
     start = 0
     for k in range(1, len(stages) + 1):
         if k == len(stages) or stages[k] != stages[start]:
@@ -140,12 +163,19 @@ def trajectory(recs, labels, path):
                     transform=ax.get_xaxis_transform(), ha="center", va="top", fontsize=7.5,
                     color=MUTED)
             start = k
-    ax.set_yscale("log")
+    if log and any(s.mean_wfe > 0 for _, snaps in series for s in snaps):
+        ax.set_yscale("log")
     ax.set_ylabel("mean RMS wavefront error [waves]", fontsize=8, color=INK)
     ax.set_xlabel("pipeline step", fontsize=8, color=INK)
     ax.grid(axis="y", color=GRID, lw=0.6)
-    if len(recs) > 1:
+    if len(series) > 1:
         ax.legend(frameon=False, fontsize=8, labelcolor=INK)
+
+
+def trajectory(recs, labels, path):
+    """Mean RMS WFE along the pipeline, one line per recorder, stages shaded."""
+    fig, ax = plt.subplots(figsize=(8, 3.4), facecolor=SURFACE)
+    draw_trajectory(ax, [(lab, rec.snaps) for rec, lab in zip(recs, labels)])
     fig.tight_layout()
     fig.savefig(path, dpi=160, facecolor=SURFACE)
     plt.close(fig)

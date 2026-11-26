@@ -38,6 +38,7 @@ import numpy as np
 
 from . import analysis as A
 from . import glass as G
+from . import progress
 from .merit import make_cfg, virtual_petzval_curvature
 from .optimize import optimize
 from .parallel import pmap
@@ -63,6 +64,7 @@ class Recorder:
     spec: Spec
     snaps: list = field(default_factory=list)
     verbose: bool = True
+    label: str = ""  # e.g. the architecture, for progress listeners
 
     def add(self, stage, step, params, layout, beta, note="", virtual_petzval=0.0, extra=None):
         # Phase stages are judged on the image surface they are designed for: the
@@ -72,6 +74,7 @@ class Recorder:
         snap = Snapshot(stage, step, params, layout, float(beta), s["mean_wfe"], s["rms_wfe"],
                         s["efl"], note, dict(extra or {}, virtual_petzval=virtual_petzval))
         self.snaps.append(snap)
+        progress.emit(self, snap)
         if self.verbose:
             wf = " ".join(f"{w:6.3f}" for w in s["rms_wfe"])
             print(f"[{stage:<11}] {step:2d}  EFL={s['efl']:7.3f}  RMS WFE [waves]: {wf}   {note}")
@@ -577,7 +580,7 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
     """Run DISTRIBUTE + COLOR for several power patterns: cheap, all in phase space."""
     def explore(item):
         name, pat = item
-        rec = Recorder(spec, verbose=verbose)
+        rec = Recorder(spec, verbose=verbose, label=name)
         if verbose:
             print(f"--- architecture {name}")
         p, lay = stage_distribute(p0, lay0, spec, rec, n_elem=len(pat), stop_index=stop_index,
@@ -605,7 +608,7 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
     bending_hops: re-bend each element to alternative shapes after the morph and keep
     real-merit improvements (`stage_bending_hops`).
     """
-    rec0 = Recorder(spec, verbose=verbose)
+    rec0 = Recorder(spec, verbose=verbose, label="ideal")
     p0, lay0 = stage_ideal(spec, rec0)
     archs = explore_architectures(p0, lay0, spec, patterns, stop_index, mech, virtual_petzval,
                                   verbose, aspheres, glass)

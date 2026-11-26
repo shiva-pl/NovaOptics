@@ -1,9 +1,9 @@
 | design | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [um] | max distortion | time [s] |
 |---|---|---|---|---|---|
-| phase-first, aspheric | 0.102 | 0.157 | 2.9 | 0.51% | 84 |
-| phase-first, spherical (asphere fade) | 0.281 | 0.372 | 5.8 | 0.71% | 22 |
+| phase-first, aspheric | 0.102 | 0.157 | 2.9 | 0.51% | 87 |
+| phase-first, spherical (asphere fade) | 0.281 | 0.372 | 5.8 | 0.71% | 23 |
 | conventional, aspheric | 0.184 | 0.213 | 4.5 | 0.24% | 31 |
-| conventional, spherical | 0.311 | 0.431 | 5.9 | 0.80% | 9 |
+| conventional, spherical | 0.311 | 0.431 | 5.9 | 0.80% | 10 |
 
 All figures evaluated on 21 field points (0-20 deg) x 8x16 pupil samples, F/d/C, after optimization on 5 field points x 6x12 pupil samples.
 

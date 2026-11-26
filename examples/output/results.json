@@ -6,9 +6,18 @@
   "mean_spot_um": 2.9366804347894733,
   "efl": 49.999880849785896,
   "max_distortion": 0.0050677536617802195,
-  "seconds": 84.2981870174408,
+  "seconds": 86.7554886341095,
   "note": "architecture ranking in phase space: [('-++', 0.15509337534145307), ('+-+', 0.35777020569012163), ('+++', 0.3699279679205777), ('++-', 0.6555283692802641)]; chosen -++",
   "prescription": "item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]\nE0           -136.977     457.159*    3.217  N-SF66                     10.146              0.00\nSTOP                                                                     2.682\nE1             40.585     -28.572*    8.000  N-PK51                     34.134              0.00\nE2            -17.227     -45.673*    2.000  SF56A                       9.204              0.00\n* rear surface is an even asphere",
+  "layout": {
+   "n_elem": 3,
+   "stop_index": 1,
+   "n_phase": 4,
+   "r_norm": 10.0,
+   "z_launch": -20.0,
+   "aspheres": true,
+   "exact_glass": true
+  },
   "params": {
    "asph": [
     [
@@ -163,9 +172,18 @@
   "mean_spot_um": 5.827777612422308,
   "efl": 50.00017469461119,
   "max_distortion": 0.007076294273042578,
-  "seconds": 22.366742372512817,
+  "seconds": 23.456702947616577,
   "note": "asphere fade of each materialized architecture; best was +-+",
   "prescription": "item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]\nE0             19.544       35.861    7.769  N-LASF41                    1.677              0.00\nSTOP                                                                     0.398\nE1            -34.317       21.799    2.000  SF56A                       2.029              0.00\nE2             48.594      -26.926    2.669  N-LASF31A                  40.634              0.00",
+  "layout": {
+   "n_elem": 3,
+   "stop_index": 1,
+   "n_phase": 4,
+   "r_norm": 10.0,
+   "z_launch": -20.0,
+   "aspheres": false,
+   "exact_glass": true
+  },
   "params": {
    "asph": [
     [
@@ -320,9 +338,18 @@
   "mean_spot_um": 4.503701583736371,
   "efl": 50.00004491565222,
   "max_distortion": 0.0023868946211409296,
-  "seconds": 30.82498288154602,
+  "seconds": 30.941312789916992,
   "note": "3/12 Cooke-type starts converged usefully",
   "prescription": "item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]\nSTOP                                                                     1.130\nE0             31.535     -75.648*    4.195  N-LASF41                    2.525              0.00\nE1            -16.532      19.257*    2.000  N-SF5                       1.251              0.00\nE2             41.555     -24.267*    5.416  N-LASF44                   45.238              0.00\n* rear surface is an even asphere",
+  "layout": {
+   "n_elem": 3,
+   "stop_index": 0,
+   "n_phase": 4,
+   "r_norm": 10.0,
+   "z_launch": -20.0,
+   "aspheres": true,
+   "exact_glass": true
+  },
   "params": {
    "asph": [
     [
@@ -477,9 +504,18 @@
   "mean_spot_um": 5.859270695212389,
   "efl": 50.00016573661493,
   "max_distortion": 0.007990491993463992,
-  "seconds": 9.21381664276123,
+  "seconds": 9.611006021499634,
   "note": "2/12 Cooke-type starts converged usefully",
   "prescription": "item          R1 [mm]      R2 [mm]   t [mm]  glass                       gap->   max |W| [waves]\nE0             19.977       42.091    8.000  N-LASF41                    1.970              0.00\nSTOP                                                                     0.326\nE1            -40.258       21.448    2.000  N-SF6                       2.597              0.00\nE2             52.109      -29.137    2.645  N-LASF31A                  39.809              0.00",
+  "layout": {
+   "n_elem": 3,
+   "stop_index": 1,
+   "n_phase": 4,
+   "r_norm": 10.0,
+   "z_launch": -20.0,
+   "aspheres": false,
+   "exact_glass": true
+  },
   "params": {
    "asph": [
     [

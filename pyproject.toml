@@ -11,6 +11,10 @@ dependencies = ["jax>=0.4.30", "numpy", "scipy", "matplotlib"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+gui = ["PySide6>=6.6"]
+
+[project.scripts]
+novaoptics-gui = "novaoptics.gui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["novaoptics*"]

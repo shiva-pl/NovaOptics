@@ -27,7 +27,7 @@ import numpy as np  # noqa: E402
 from novaoptics import continuation as C  # noqa: E402
 from novaoptics import diagnostics as D  # noqa: E402
 from novaoptics.plot import GRID, INK, MUTED, SERIES, SURFACE, _style  # noqa: E402
-from novaoptics.system import Layout, Spec  # noqa: E402
+from novaoptics.system import Layout, Spec, layout_from_dict  # noqa: E402
 
 HERE = Path(__file__).parent
 OUT = HERE / "output" / "diagnostics"
@@ -42,8 +42,11 @@ def load_designs(glass):
     out = {}
     for r in rows:
         p = {k: jnp.asarray(v) for k, v in r["params"].items()}
-        lay = Layout(n_elem=3, stop_index=1, aspheres="aspheric" in r["design"],
-                     glass=glass if "g" in p else None)
+        if "layout" in r:
+            lay = layout_from_dict(r["layout"], glass)
+        else:  # results.json from before layouts were saved
+            lay = Layout(n_elem=3, stop_index=1, aspheres="aspheric" in r["design"],
+                         glass=glass if "g" in p else None)
         out[r["design"]] = (p, lay)
     return out
 

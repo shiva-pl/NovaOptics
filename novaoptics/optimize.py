@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
 
+from . import progress
 from .merit import residuals
 from .system import Layout, Spec
 
@@ -134,6 +135,7 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     before evaluating the merit; this is how continuation reparameterizations work.
     Thread-safe: independent calls may run concurrently (see parallel.py).
     """
+    progress.check()
     full, unravel = ravel_pytree(params)
     idx = free_mask(params, free)
     if idx.size == 0:
@@ -166,6 +168,7 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     it = 0
     tol = STOP_TOL if tol is None else tol
     for it in range(iters):
+        progress.check()  # cooperative cancel (GUI stop button)
         tj = clock()
         J = np.asarray(jac(x, full, cfg))
         lt["jac"] += clock() - tj
