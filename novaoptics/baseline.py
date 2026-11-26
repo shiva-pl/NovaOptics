@@ -19,6 +19,7 @@ from . import analysis as A
 from . import glass as G
 from .continuation import Mech, Recorder, _glass_vars, stage_catalog
 from .optimize import optimize
+from .parallel import pmap
 from .system import Layout, Spec, nearest_in_space, new_params, set_glass
 
 
@@ -55,17 +56,20 @@ def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech
     rng = np.random.default_rng(seed)
     cfg = mech.cfg()
     free = {k: True for k in _glass_vars(lay, glass=free_glass)}
-    runs = []
     t0 = time.time()
-    for trial in range(n_starts):
-        p = cooke_start(lay, spec, rng)
+    starts = [cooke_start(lay, spec, rng) for _ in range(n_starts)]  # drawn in order
+
+    def run(p):
         p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
         s = A.summary(p, lay, spec)
         score = s["mean_wfe"] if abs(s["efl"] - spec.efl) < 0.05 * spec.efl else np.inf
-        runs.append({"score": score if np.isfinite(score) else np.inf, "params": p,
-                     "rms_wfe": s["rms_wfe"]})
-        if verbose:
-            print(f"  start {trial:2d}: mean RMS WFE {score:10.4f} waves", flush=True)
+        return {"score": score if np.isfinite(score) else np.inf, "params": p,
+                "rms_wfe": s["rms_wfe"]}
+
+    runs = pmap(run, starts)  # independent starts run concurrently
+    if verbose:
+        for trial, r in enumerate(runs):
+            print(f"  start {trial:2d}: mean RMS WFE {r['score']:10.4f} waves", flush=True)
     best = min(runs, key=lambda r: r["score"])
     p = best["params"]
     rec = Recorder(spec, verbose=verbose)

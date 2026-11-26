@@ -39,7 +39,8 @@ import numpy as np
 from . import analysis as A
 from . import glass as G
 from .merit import make_cfg, virtual_petzval_curvature
-from .optimize import clear_compiled, optimize
+from .optimize import optimize
+from .parallel import pmap
 from .system import Layout, Spec, glass_label, new_params, set_glass
 
 
@@ -280,7 +281,6 @@ def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(), k=3
     screens want a different stop than thick glass elements.)
     """
     from . import stopshift as SS
-    from .merit import residuals
 
     sc = SS.scan(p, lay, spec, beta=1.0, virtual_petzval=0.0)
     z_now = sc["current_z"]
@@ -288,14 +288,17 @@ def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(), k=3
     cands = SS.candidates(sc, k=k)
     cfg = mech.cfg()
     free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
-    best = None
-    for z in [z_now] + [c for c in cands if abs(c - z_now) > 0.5]:
+    def try_position(z):
         # keep the current layout for the current position: a relayout could put a stop
         # that sits exactly at a vertex on the other side of that element
         q, lq = (p, lay) if z == z_now else SS.relayout(p, lay, z)
-        q, _ = optimize(q, lq, spec, cfg, free, iters=iters)
-        cost = float(np.sum(np.asarray(residuals(q, lq, spec, cfg)) ** 2))
-        cost = cost if np.isfinite(cost) else np.inf
+        q, info = optimize(q, lq, spec, cfg, free, iters=iters)
+        cost = info.get("cost", np.inf)
+        return (cost if np.isfinite(cost) else np.inf), q, lq, z
+
+    best = None
+    for cost, q, lq, z in pmap(try_position,
+                               [z_now] + [c for c in cands if abs(c - z_now) > 0.5]):
         i = int(np.argmin(np.abs(sc["z"] - z)))
         if rec.verbose:
             print(f"      stop at z={z:+7.2f} mm (third-order merit {sc['merit'][i]:9.3g}) "
@@ -321,29 +324,28 @@ def stage_bending_hops(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
     re-polished), and the best improvement of the merit is kept.
     """
     from .bending import rebend
-    from .merit import residuals
 
     cfg = mech.cfg()
     free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
 
-    def cost(q):
-        c = float(np.sum(np.asarray(residuals(q, lay, spec, cfg)) ** 2))
-        return c if np.isfinite(c) else np.inf
+    def polish(q, n):
+        q, info = optimize(q, lay, spec, cfg, free, iters=n)  # n = 0: compiled cost only
+        c = info.get("cost", np.inf)
+        return q, (c if np.isfinite(c) else np.inf)
 
     def shape(q, i):
         c1, c2 = float(q["c1"][i]), float(q["c2"][i])
         return (c1 + c2) / (c1 - c2) if c1 != c2 else 0.0
 
-    best, best_cost = p, cost(p)
+    best, best_cost = polish(p, 0)
     rec.add(label, 0, p, lay, 1.0, "before")
     moves = []
     for i in range(lay.n_elem):
         base, X_now, found = best, shape(best, i), None
-        for X in X_alt:
-            if abs(X - X_now) < 0.75:
-                continue
-            q, _ = optimize(rebend(base, i, X), lay, spec, cfg, free, iters=iters)
-            c = cost(q)
+        alts = [X for X in X_alt if abs(X - X_now) >= 0.75]
+        # the alternatives all start from the same design: independent, so concurrent
+        tried = pmap(lambda X: polish(rebend(base, i, X), iters), alts)
+        for q, c in tried:
             if c < best_cost:
                 best, best_cost, found = q, c, shape(q, i)
         if found is not None:
@@ -411,7 +413,6 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     """
     from jax.flatten_util import ravel_pytree
 
-    from .merit import residuals
     from .optimize import _compiled, free_mask
 
     gs = lay.glass
@@ -419,8 +420,8 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     cfg = make_cfg(**cfg_kw)
     full, unravel = ravel_pytree(p)
     idx = free_mask(p, {"g": True})
-    _, jac = _compiled(lay, spec, unravel, tuple(int(i) for i in idx), None)
-    r0 = np.asarray(residuals(p, lay, spec, cfg))
+    res, jac = _compiled(lay, spec, unravel, tuple(int(i) for i in idx), None)[:2]
+    r0 = np.asarray(res(full[idx], full, cfg))
     J = np.asarray(jac(full[idx], full, cfg))  # [R, n*k], g flattened row-major
     g0 = np.asarray(p["g"])
     C = gs.coords / gs.scale  # catalog coordinates [G, k]
@@ -452,14 +453,17 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
         order.append(o_near)  # always try the all-nearest combination too
 
     free = {v: True for v in free_other}
+
+    def try_combo(o):
+        q = set_glass(dict(p), lay, list(range(n)), list(combos[o]), exact=True)
+        q, info = optimize(q, lay, spec, cfg, free, iters=iters)
+        cost = info.get("cost", np.inf)
+        # a failed re-optimization (ray failures) is never selected
+        return o, q, (cost if np.isfinite(cost) else np.inf)
+
     best = None
-    for o in order:
+    for o, q, cost in pmap(try_combo, order):
         combo = combos[o]
-        q = set_glass(dict(p), lay, list(range(n)), list(combo), exact=True)
-        q, _ = optimize(q, lay, spec, cfg, free, iters=iters)
-        cost = float(np.sum(np.asarray(residuals(q, lay, spec, cfg)) ** 2))
-        if not np.isfinite(cost):
-            cost = np.inf  # failed re-optimization (ray failures): never selected
         names = "/".join(gs.names[j] for j in combo)
         if rec.verbose:
             print(f"      {label}: {names:<34} predicted {pred[o]:.4g}  after re-opt {cost:.4g}")
@@ -571,8 +575,8 @@ PATTERNS = {
 def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1, mech=Mech(),
                           virtual_petzval=1.0, verbose=True, aspheres=False, glass=None):
     """Run DISTRIBUTE + COLOR for several power patterns: cheap, all in phase space."""
-    results = []
-    for name, pat in patterns.items():
+    def explore(item):
+        name, pat = item
         rec = Recorder(spec, verbose=verbose)
         if verbose:
             print(f"--- architecture {name}")
@@ -580,9 +584,10 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
                                   mech=mech, virtual_petzval=virtual_petzval, pattern=pat,
                                   aspheres=aspheres, glass=glass)
         p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
-        results.append({"name": name, "params": p, "layout": lay, "rec": rec,
-                        "score": rec.snaps[-1].mean_wfe})
-        clear_compiled()
+        return {"name": name, "params": p, "layout": lay, "rec": rec,
+                "score": rec.snaps[-1].mean_wfe}
+
+    results = pmap(explore, patterns.items())  # architectures are independent
     results.sort(key=lambda r: r["score"] if np.isfinite(r["score"]) else np.inf)
     return results
 
@@ -606,8 +611,7 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
                                   verbose, aspheres, glass)
     if verbose:
         print("phase-space ranking:", ", ".join(f"{a['name']} {a['score']:.3f}" for a in archs))
-    finals = []
-    for a in archs[:top_k]:
+    def finish(a):
         if verbose:
             print(f"=== materializing architecture {a['name']}")
         rec = a["rec"]
@@ -620,8 +624,9 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         if stop_shift:
             p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
-        finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
-        clear_compiled()  # each architecture compiles its own merit functions
+        return (rec.snaps[-1].mean_wfe, a["name"], p, lay, rec)
+
+    finals = pmap(finish, archs[:top_k])  # architectures are independent
     finals.sort(key=lambda f: f[0] if np.isfinite(f[0]) else np.inf)
     score, name, p, lay, rec = finals[0]
     info = {"architectures": [(a["name"], a["score"]) for a in archs],

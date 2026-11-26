@@ -157,12 +157,24 @@ def clear_semi_diameters(ev, margin=1.02):
     return jnp.max(ev["heights"], axis=(0, 1, 2)) * margin
 
 
-def summary(params, layout: Layout, spec: Spec, beta=1.0, c_img=0.0):
+_SUMMARY_JIT: dict = {}
+
+
+def _summary_core(params, beta, c_img, layout, spec):
     ev = evaluate(params, layout, spec, beta, c_img=c_img)
     efl = paraxial_efl(params, layout, spec, beta)
-    wfe = rms_wfe(ev, spec)
-    spot = rms_spot(ev, spec)
-    dist = distortion(ev, efl)
+    return efl, rms_wfe(ev, spec), rms_spot(ev, spec), distortion(ev, efl)
+
+
+def summary(params, layout: Layout, spec: Spec, beta=1.0, c_img=0.0):
+    """EFL, per-field RMS wavefront error and spot, distortion (compiled per layout)."""
+    key = (layout, spec)
+    if key not in _SUMMARY_JIT:
+        if len(_SUMMARY_JIT) > 32:
+            _SUMMARY_JIT.clear()
+        _SUMMARY_JIT[key] = jax.jit(lambda p, b, c: _summary_core(p, b, c, layout, spec))
+    efl, wfe, spot, dist = _SUMMARY_JIT[key](params, jnp.asarray(beta, float),
+                                             jnp.asarray(c_img, float))
     return {
         "efl": float(efl),
         "rms_wfe": np.asarray(wfe),

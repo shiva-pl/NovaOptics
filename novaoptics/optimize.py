@@ -8,6 +8,7 @@ only changes `cfg` values compiles once.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 
@@ -24,11 +25,48 @@ from .system import Layout, Spec
 # an unbounded one ran a long multi-architecture run out of memory in LLVM.
 _CACHE: OrderedDict = OrderedDict()
 CACHE_SIZE = 16
+_LOCK = threading.Lock()  # optimizations may run in threads (see parallel.py)
+
+
+class Stats:
+    """Wall-time accounting of the optimizer (seconds), for profiling and progress."""
+
+    def __init__(self):
+        self.reset()
+
+    def add(self, t=None, n=None):
+        with _LOCK:
+            for k, v in (t or {}).items():
+                self.t[k] += v
+            for k, v in (n or {}).items():
+                self.n[k] += v
+
+    def reset(self):
+        self.t = {"compile": 0.0, "jac": 0.0, "res": 0.0, "solve": 0.0, "total": 0.0}
+        self.n = {"compiles": 0, "calls": 0, "iters": 0, "jac": 0, "res": 0, "rejected": 0}
+        self.shapes = []  # (n_free, n_residuals) per compiled function pair
+
+    def report(self):
+        t, n = self.t, self.n
+        other = t["total"] - t["compile"] - t["jac"] - t["res"] - t["solve"]
+        lines = [f"optimizer wall time {t['total']:.1f} s in {n['calls']} calls, "
+                 f"{n['iters']} LM iterations ({n['rejected']} rejected trial steps)"]
+        for k in ("compile", "jac", "res", "solve"):
+            per = {"compile": n["compiles"], "jac": n["jac"], "res": n["res"],
+                   "solve": n["iters"] + n["rejected"]}[k]
+            lines.append(f"  {k:<8} {t[k]:8.1f} s  {100 * t[k] / max(t['total'], 1e-9):5.1f}%"
+                         f"  ({per} x {1e3 * t[k] / max(per, 1):.2f} ms)")
+        lines.append(f"  {'other':<8} {other:8.1f} s  {100 * other / max(t['total'], 1e-9):5.1f}%")
+        return "\n".join(lines)
+
+
+STATS = Stats()
 
 
 def clear_compiled():
     """Drop all compiled merit functions (ours and JAX's own caches)."""
-    _CACHE.clear()
+    with _LOCK:
+        _CACHE.clear()
     jax.clear_caches()
 
 
@@ -54,6 +92,11 @@ def free_mask(params, free: dict):
 
 def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
     key = (layout, spec, idx_key, transform)
+    with _LOCK:
+        return _compiled_locked(key, layout, spec, unravel, idx_key, transform)
+
+
+def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
     if key in _CACHE:
         _CACHE.move_to_end(key)
     else:
@@ -65,7 +108,7 @@ def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
                 p = transform(p, cfg, layout)
             return residuals(p, layout, spec, cfg)
 
-        _CACHE[key] = (jax.jit(res), jax.jit(jax.jacfwd(res)))
+        _CACHE[key] = [jax.jit(res), jax.jit(jax.jacfwd(res)), False]  # False: not compiled
         while len(_CACHE) > CACHE_SIZE:
             _CACHE.popitem(last=False)
     return _CACHE[key]
@@ -73,44 +116,76 @@ def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
 
 def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verbose=False,
              lam=1e-3, tol=1e-9, transform=None):
-    """Minimize the merit over the `free` entries of `params`.
+    """Minimize the merit over the `free` entries of `params` (Levenberg-Marquardt).
 
     If `transform` (a module-level function `(z, cfg, layout) -> params`) is given,
     `params` is a design-variable pytree z that is mapped to system parameters
     before evaluating the merit; this is how continuation reparameterizations work.
+    Thread-safe: independent calls may run concurrently (see parallel.py).
     """
     full, unravel = ravel_pytree(params)
     idx = free_mask(params, free)
     if idx.size == 0:
         return params, {}
-    res, jac = _compiled(layout, spec, unravel, tuple(int(i) for i in idx), transform)
+    entry = _compiled(layout, spec, unravel, tuple(int(i) for i in idx), transform)
+    res, jac = entry[0], entry[1]
     x = full[idx]
+    clock = time.perf_counter
+    t_start = clock()
+    lt = {"compile": 0.0, "jac": 0.0, "res": 0.0, "solve": 0.0}
+    ln = {"calls": 1, "compiles": 0, "iters": 0, "jac": 0, "res": 0, "rejected": 0}
+    if not entry[2]:  # first use: trigger and time the compilation of both functions
+        tc = clock()
+        jax.block_until_ready(res(x, full, cfg))
+        J0 = jax.block_until_ready(jac(x, full, cfg))
+        lt["compile"] += clock() - tc
+        ln["compiles"] += 1
+        with _LOCK:
+            STATS.shapes.append((int(x.size), int(J0.shape[0])))
+        entry[2] = True
+    tr = clock()
     r = res(x, full, cfg)
     cost = float(r @ r)
+    lt["res"] += clock() - tr
+    ln["res"] += 1
     history = [cost]
     t0 = time.time()
+    it = 0
     for it in range(iters):
+        tj = clock()
         J = np.asarray(jac(x, full, cfg))
+        lt["jac"] += clock() - tj
+        ln["jac"] += 1
+        ln["iters"] += 1
         rn = np.asarray(r)
+        ts = clock()
         A = J.T @ J
         g = J.T @ rn
         dA = np.diag(A).copy() + 1e-12
+        lt["solve"] += clock() - ts
         improved = False
         for _ in range(12):
+            ts = clock()
             try:
                 dx = -np.linalg.solve(A + lam * np.diag(dA), g)
             except np.linalg.LinAlgError:
                 lam *= 10
                 continue
+            finally:
+                lt["solve"] += clock() - ts
             x_new = x + dx
+            tr = clock()
             r_new = res(x_new, full, cfg)
             c_new = float(r_new @ r_new)
+            lt["res"] += clock() - tr
+            ln["res"] += 1
             if np.isfinite(c_new) and c_new < cost:
                 improved = True
                 rel = (cost - c_new) / max(cost, 1e-30)
                 x, r, cost = x_new, r_new, c_new
                 lam = max(lam / 3, 1e-9)
                 break
+            ln["rejected"] += 1
             lam *= 4
         history.append(cost)
         if verbose:
@@ -118,4 +193,6 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
         if not improved or rel < tol:
             break
     out = unravel(full.at[idx].set(x))
+    lt["total"] = clock() - t_start
+    STATS.add(lt, ln)
     return out, {"cost": cost, "history": history, "iters": it + 1, "time": time.time() - t0}

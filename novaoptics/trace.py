@@ -17,6 +17,8 @@ so gradients stay finite; the merit function sees the resulting large errors.
 
 from __future__ import annotations
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 
@@ -85,13 +87,15 @@ def interface(pos, d, opl, zv, c, n1, n2, phase=None, r_norm=1.0, asph=None, new
     Gq = d[2] - c * (x * d[0] + y * d[1])
     s = F / (Gq + _safe_sqrt(Gq * Gq - c * F))
     if asph is not None:
-        for _ in range(newton):
+        def newton_step(_, s):
             q = p0 + s * d
             r2 = q[0] ** 2 + q[1] ** 2
             sag, dsag = surface_sag(c, asph, r2, r_norm)
             f = q[2] - zv - sag
             fp = d[2] - 2.0 * dsag * (q[0] * d[0] + q[1] * d[1])
-            s = s - f / fp
+            return s - f / fp
+
+        s = jax.lax.fori_loop(0, newton, newton_step, s)  # a loop, not unrolled
     p1 = p0 + s * d
     opl = opl + n1 * (t0 + s)
 
@@ -187,23 +191,49 @@ def launch(field_angle, y0, px, py, radius, layout: Layout):
     return o, d
 
 
+def _stop_y(y0, params, layout: Layout, field_angle, wavelength, beta):
+    o, d = launch(field_angle, y0, 0.0, 0.0, 0.0, layout)
+    return trace_ray(params, layout, wavelength, beta, o, d)["stop_xy"][1]
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(5, 6))
+def _aim(params, field_angle, wavelength, beta, y_init, layout, iters):
+    def body(_, y0):
+        val, slope = jax.jvp(lambda y: _stop_y(y, params, layout, field_angle, wavelength, beta),
+                             (y0,), (jnp.ones_like(y0),))
+        return y0 - val / jnp.where(jnp.abs(slope) > 1e-9, slope, 1e-9)
+
+    return jax.lax.fori_loop(0, iters, body, y_init)
+
+
+@_aim.defjvp
+def _aim_jvp(layout, iters, primals, tangents):
+    """Implicit differentiation: y solves f(y, theta) = 0, so dy = -(df/dtheta) / (df/dy).
+
+    Differentiating through the Newton iterations instead would make the compiled
+    Jacobian of the merit several times larger (and slower to compile)."""
+    params, fa, wl, beta, y_init = primals
+    dparams, dfa, dwl, dbeta, _ = tangents
+    y = _aim(params, fa, wl, beta, y_init, layout, iters)
+    _, f_y = jax.jvp(lambda y_: _stop_y(y_, params, layout, fa, wl, beta), (y,),
+                     (jnp.ones_like(y),))
+    _, f_t = jax.jvp(lambda p_, a_, w_, b_: _stop_y(y, p_, layout, a_, w_, b_),
+                     (params, fa, wl, beta), (dparams, dfa, dwl, dbeta))
+    return y, -f_t / jnp.where(jnp.abs(f_y) > 1e-9, f_y, 1e-9)
+
+
 def aim_chief(params, layout: Layout, field_angle, wavelength, beta=1.0, iters=6):
-    """Find the launch height whose ray passes through the center of the stop."""
+    """Find the launch height whose ray passes through the center of the stop.
 
-    def stop_y(y0):
-        o, d = launch(field_angle, y0, 0.0, 0.0, 0.0, layout)
-        return trace_ray(params, layout, wavelength, beta, o, d)["stop_xy"][1]
-
+    Newton iterations in a loop (not unrolled), differentiated implicitly."""
     # Initial guess: straight line to the stop vertex.
     z_stop = 0.0
     for k, item in enumerate(layout.items()):
         if item == "stop":
             break
-        if item != "stop":
-            z_stop = z_stop + params["t"][item]
+        z_stop = z_stop + params["t"][item]
         z_stop = z_stop + params["gaps"][k]
-    y0 = -jnp.tan(field_angle) * (z_stop - layout.z_launch)
-    for _ in range(iters):
-        val, slope = jax.jvp(stop_y, (y0,), (1.0,))
-        y0 = y0 - val / jnp.where(jnp.abs(slope) > 1e-9, slope, 1e-9)
-    return y0
+    y_init = -jnp.tan(field_angle) * (z_stop - layout.z_launch)
+    f = jnp.asarray
+    return _aim(params, f(field_angle, float), f(wavelength, float), f(beta, float),
+                jnp.asarray(y_init, float), layout, iters)

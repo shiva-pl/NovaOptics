@@ -30,7 +30,8 @@ from novaoptics import analysis as A  # noqa: E402
 from novaoptics import continuation as C  # noqa: E402
 from novaoptics import plot as P  # noqa: E402
 from novaoptics.baseline import conventional  # noqa: E402
-from novaoptics.optimize import clear_compiled  # noqa: E402
+from novaoptics.optimize import STATS  # noqa: E402
+from novaoptics.parallel import pmap  # noqa: E402
 from novaoptics.system import Spec, describe, to_numpy  # noqa: E402
 
 OUT = Path(__file__).parent / "output"
@@ -73,23 +74,23 @@ def main(quick=False):
            f"architecture ranking in phase space: {info['architectures']}; chosen {info['chosen']}")
     rec_phase = rec
 
-    clear_compiled()
     # 2. phase-first -> all-spherical: fade the aspheres out of every materialized
     #    architecture and keep the best (ranking by materialized, not phase-space, merit)
     t = time.time()
-    best = None
-    for cand in info["candidates"]:
-        rec_s = C.Recorder(spec)
+    def spherize(cand):
+        rec_s = C.Recorder(spec, verbose=False)
         ps, lays = C.stage_spherize(cand["params"], cand["layout"], spec, rec_s,
                                     steps=5 if quick else 10)
-        score = rec_s.snaps[-1].mean_wfe
-        print(f"spherized architecture {cand['name']}: {score:.3f} waves", flush=True)
-        if best is None or score < best[0]:
-            best = (score, ps, lays, cand["name"])
+        return rec_s.snaps[-1].mean_wfe, ps, lays, cand["name"]
+
+    best = None
+    for score, ps, lays, name in pmap(spherize, info["candidates"]):  # independent
+        print(f"spherized architecture {name}: {score:.3f} waves", flush=True)
+        if np.isfinite(score) and (best is None or score < best[0]):
+            best = (score, ps, lays, name)
     record("phase-first, spherical (asphere fade)", best[1], best[2], time.time() - t,
            f"asphere fade of each materialized architecture; best was {best[3]}")
 
-    clear_compiled()
     # 3./4. conventional multi-start from Cooke-type starting points
     for asph in (True, False):
         t = time.time()
@@ -137,6 +138,7 @@ def main(quick=False):
         lines += ["", f"## {r['design']}", "", r["note"], "", "```", r["prescription"], "```"]
     (OUT / "results.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines[: len(rows) + 2]))
+    print("\n" + STATS.report())
 
 
 if __name__ == "__main__":
