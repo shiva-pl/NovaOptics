@@ -26,6 +26,10 @@ from .system import Layout, Spec
 _CACHE: OrderedDict = OrderedDict()
 CACHE_SIZE = 16
 _LOCK = threading.Lock()  # optimizations may run in threads (see parallel.py)
+# Relative cost reduction regarded as converged.  Kept tight: the morph is a homotopy,
+# and stopping its steps early (1e-7 was tried) steers it into a worse final design
+# (0.108 vs 0.102 waves), as the path-gap diagnostic predicts.
+STOP_TOL = 1e-9
 
 
 class Stats:
@@ -108,15 +112,22 @@ def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
                 p = transform(p, cfg, layout)
             return residuals(p, layout, spec, cfg)
 
-        _CACHE[key] = [jax.jit(res), jax.jit(jax.jacfwd(res)), False]  # False: not compiled
+        # [residual, Jacobian, compiled?, compile lock]
+        _CACHE[key] = [jax.jit(res), jax.jit(jax.jacfwd(res)), False, threading.Lock()]
         while len(_CACHE) > CACHE_SIZE:
             _CACHE.popitem(last=False)
     return _CACHE[key]
 
 
 def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verbose=False,
-             lam=1e-3, tol=1e-9, transform=None):
+             lam=1e-3, tol=None, transform=None):
     """Minimize the merit over the `free` entries of `params` (Levenberg-Marquardt).
+
+    Marquardt damping: lambda / 3 after an accepted step, x 4 after a rejected one.  The
+    loop stops when the relative cost reduction falls below `tol` (default STOP_TOL)
+    or no step improves the cost.  (Nielsen's rho-based damping and a looser stopping
+    rule were tried: they saved few iterations and made the final designs worse, since
+    the morph's homotopy path is sensitive to how each step converges.)
 
     If `transform` (a module-level function `(z, cfg, layout) -> params`) is given,
     `params` is a design-variable pytree z that is mapped to system parameters
@@ -134,15 +145,17 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     t_start = clock()
     lt = {"compile": 0.0, "jac": 0.0, "res": 0.0, "solve": 0.0}
     ln = {"calls": 1, "compiles": 0, "iters": 0, "jac": 0, "res": 0, "rejected": 0}
-    if not entry[2]:  # first use: trigger and time the compilation of both functions
-        tc = clock()
-        jax.block_until_ready(res(x, full, cfg))
-        J0 = jax.block_until_ready(jac(x, full, cfg))
-        lt["compile"] += clock() - tc
-        ln["compiles"] += 1
-        with _LOCK:
-            STATS.shapes.append((int(x.size), int(J0.shape[0])))
-        entry[2] = True
+    if not entry[2]:  # first use: compile both functions once (other threads wait)
+        with entry[3]:
+            if not entry[2]:
+                tc = clock()
+                jax.block_until_ready(res(x, full, cfg))
+                J0 = jax.block_until_ready(jac(x, full, cfg))
+                lt["compile"] += clock() - tc
+                ln["compiles"] += 1
+                with _LOCK:
+                    STATS.shapes.append((int(x.size), int(J0.shape[0])))
+                entry[2] = True
     tr = clock()
     r = res(x, full, cfg)
     cost = float(r @ r)
@@ -151,6 +164,7 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     history = [cost]
     t0 = time.time()
     it = 0
+    tol = STOP_TOL if tol is None else tol
     for it in range(iters):
         tj = clock()
         J = np.asarray(jac(x, full, cfg))
