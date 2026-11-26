@@ -39,6 +39,7 @@ class RunOptions:
     spherize: bool = True  # phase-first + aspheres: also fade the aspheres out
     catalog: str | None = str(DEFAULT_AGF) if DEFAULT_AGF.exists() else None
     architectures: tuple = tuple(C.PATTERNS)
+    n_elem: int = 3  # phase-first: grow the 3-screen architectures to this many elements
     top_k: int = 4
     stop_shift: bool = True
     bending_hops: bool = False
@@ -182,9 +183,9 @@ def _phase_first(opts, spec, mech, glass, done, log):
         spec, mech=mech, patterns=patterns, top_k=max(1, min(opts.top_k, len(patterns))),
         aspheres=opts.aspheres, glass=glass, morph_iters=opts.morph_iters,
         glass_pull=opts.glass_pull, stop_shift=opts.stop_shift,
-        bending_hops=opts.bending_hops, verbose=True)
+        bending_hops=opts.bending_hops, verbose=True, n_elem=opts.n_elem)
     ranking = ", ".join(f"{n} {s:.3f}" for n, s in info["architectures"])
-    done(Design(f"phase-first, {kind}", p, lay, spec, time.time() - t,
+    done(Design(f"phase-first, {lay.n_elem} elements, {kind}", p, lay, spec, time.time() - t,
                 f"phase-space ranking: {ranking}; chosen {info['chosen']}", opts.catalog,
                 list(rec.snaps)))
     if not (opts.aspheres and opts.spherize):
@@ -206,7 +207,8 @@ def _phase_first(opts, spec, mech, glass, done, log):
         return
     score, ps, lays, cand, rec_s = best
     snaps = list(cand["rec"].snaps) + list(rec_s.snaps)
-    done(Design("phase-first, spherical (asphere fade)", ps, lays, spec, time.time() - t,
+    done(Design(f"phase-first, {lays.n_elem} elements, spherical (asphere fade)", ps, lays,
+                spec, time.time() - t,
                 f"asphere fade of each materialized architecture; best was {cand['name']}",
                 opts.catalog, snaps))
 

@@ -17,6 +17,8 @@ Stage 3  MATERIALIZE  homotopy s: 0 -> 1.  Element i carries total power phi_i; 
                       takes s*phi_i (real curvatures, thickness, Petzval from the trace),
                       ideal phase keeps (1-s)*phi_i plus (1-s)*aspheric terms.  At s = 1
                       the phase is identically zero: an all-spherical glass system.
+(GROW)                optional: split screens in phase space until the target number of
+                      elements is reached (grow.py).
 Stage 4  CATALOG      pull (n_d, V_d) to real catalog glasses, snap (candidates ranked by
                       predicted merit) and re-optimize.  With a catalog the pull already
                       ramps up during the morph, so the snap is a small step.
@@ -385,8 +387,13 @@ def stage_catalog(p, lay: Layout, spec: Spec, rec: Recorder, candidates=2, iters
                for i in range(lay.n_elem)]
     free_ng = {k: True for k in _glass_vars(lay) if k not in ("nd", "vd")}
     cfg = make_cfg(**base)
+    combos = list(itertools.product(*options))
+    if len(combos) > 16:  # many elements: all-nearest plus one alternative at a time
+        near = tuple(o[0] for o in options)
+        combos = [near] + [near[:i] + (o,) + near[i + 1:] for i in range(lay.n_elem)
+                           for o in options[i][1:]]
     best = None
-    for combo in itertools.product(*options):
+    for combo in combos:
         q = dict(p)
         q["nd"] = jnp.array([g[1] for g in combo])
         q["vd"] = jnp.array([g[2] for g in combo])
@@ -447,10 +454,11 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
         # The linear prediction is reliable for small moves only, so the nearest
         # glasses are always candidates alongside the best-predicted ones.
         top.append(list(dict.fromkeys(list(np.argsort(pred)[:top_m]) + near)))
-    combos = list(itertools.product(*top))
-    D = np.array([np.concatenate([C[j] - g0[i] for i, j in enumerate(c)]) for c in combos])
-    pred = np.nan_to_num(np.sum((r0[None, :] + D @ J.T) ** 2, axis=1), nan=np.inf)
-    order = list(np.argsort(pred)[:n_eval])
+    combos, pred = _rank_combos(r0, J, C, g0, top, k)
+    order = list(range(min(n_eval, len(combos))))
+    if tuple(nearest) not in combos:
+        combos.append(tuple(nearest))
+        pred = np.r_[pred, _predict(r0, J, C, g0, [tuple(nearest)], k)]
     o_near = combos.index(tuple(nearest))
     if o_near not in order:
         order.append(o_near)  # always try the all-nearest combination too
@@ -482,6 +490,34 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     rec.add(label, 0, best[1], lay, cfg_kw.get("beta", 1.0), f"snapped to {best[2]}",
             virtual_petzval)
     return best[1], lay
+
+
+def _predict(r0, J, C, g0, combos, k):
+    D = np.array([np.concatenate([C[j] - g0[i] for i, j in enumerate(c)]) for c in combos])
+    return np.nan_to_num(np.sum((r0[None, :] + D @ J.T) ** 2, axis=1), nan=np.inf)
+
+
+def _rank_combos(r0, J, C, g0, top, k, exhaustive=20000, beam=400):
+    """Glass combinations (one candidate per element) sorted by predicted cost
+    |r0 + J D|^2.  All combinations while there are at most `exhaustive`; beyond
+    that (many elements) a beam search over elements on the same model, keeping the
+    `beam` best partial combinations (unassigned elements stay where they are)."""
+    n = len(top)
+    if np.prod([len(t) for t in top], dtype=float) <= exhaustive:
+        combos = list(itertools.product(*top))
+        pred = _predict(r0, J, C, g0, combos, k)
+    else:
+        # per-element residual changes u[i][j] = J_i (C_j - g0_i)
+        u = [{j: J[:, i * k:(i + 1) * k] @ (C[j] - g0[i]) for j in top[i]} for i in range(n)]
+        partial = [((), r0)]
+        for i in range(n):
+            ext = [(c + (j,), v + u[i][j]) for c, v in partial for j in top[i]]
+            cost = np.nan_to_num([float(v @ v) for _, v in ext], nan=np.inf)
+            partial = [ext[m] for m in np.argsort(cost)[:beam]]
+        combos = [c for c, _ in partial]
+        pred = np.nan_to_num([float(v @ v) for _, v in partial], nan=np.inf)
+    order = np.argsort(pred)
+    return [combos[o] for o in order], np.asarray(pred)[order]
 
 
 def pull_to_catalog(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free, label,
@@ -597,7 +633,8 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
                       patterns=PATTERNS, top_k=2, aspheres=False, glass=None, morph_iters=30,
-                      glass_pull=0.1, stop_shift=False, bending_hops=False, verbose=True):
+                      glass_pull=0.1, stop_shift=False, bending_hops=False, verbose=True,
+                      n_elem=None):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
     glass: a catalog.GlassSpace of real catalog glasses.  Glasses stay continuous
@@ -607,6 +644,9 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
     stop_shift: place the stop on the materialized glass system (`stage_stop_shift`).
     bending_hops: re-bend each element to alternative shapes after the morph and keep
     real-merit improvements (`stage_bending_hops`).
+    n_elem: number of elements of the final design.  The architectures (`patterns`)
+    start with len(pattern) screens; GROW splits screens in phase space up to n_elem
+    (see grow.py) before the morph.
     """
     rec0 = Recorder(spec, verbose=verbose, label="ideal")
     p0, lay0 = stage_ideal(spec, rec0)
@@ -619,7 +659,13 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
             print(f"=== materializing architecture {a['name']}")
         rec = a["rec"]
         rec.snaps[:0] = rec0.snaps
-        p, lay = stage_materialize(a["params"], a["layout"], spec, rec, mech=mech,
+        p, lay = a["params"], a["layout"]
+        if n_elem and n_elem > lay.n_elem:
+            from .grow import stage_grow
+
+            p, lay = stage_grow(p, lay, spec, rec, n_elem, mech=mech,
+                                virtual_petzval=virtual_petzval)
+        p, lay = stage_materialize(p, lay, spec, rec, mech=mech,
                                    virtual_petzval=virtual_petzval, iters=morph_iters,
                                    glass_pull=glass_pull if glass is not None else 0.0)
         if bending_hops:

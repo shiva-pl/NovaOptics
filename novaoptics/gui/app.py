@@ -243,8 +243,7 @@ class MainWindow(QtWidgets.QMainWindow):
         f.addRow("Half field", self.hfov)
         f.addRow("Max distortion", self.maxdist)
         f.addRow("Max track", self.track)
-        wl = QtWidgets.QLabel("F, d, C (486.1, 587.6, 656.3 nm), object at infinity, "
-                              "3 elements")
+        wl = QtWidgets.QLabel("F, d, C (486.1, 587.6, 656.3 nm), object at infinity")
         wl.setWordWrap(True)
         f.addRow("Spectrum", wl)
         v.addWidget(g)
@@ -281,6 +280,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.top_k.setToolTip("How many architectures (best in phase space) to materialize")
         f.addWidget(QtWidgets.QLabel("Materialize best"), 2, 0)
         f.addWidget(self.top_k, 2, 1)
+        self.n_elem = _ispin(3, 12, o.n_elem)
+        self.n_elem.setToolTip("Architectures start with 3 screens; GROW splits screens in "
+                               "phase space until the design has this many elements")
+        f.addWidget(QtWidgets.QLabel("Elements"), 3, 0)
+        f.addWidget(self.n_elem, 3, 1)
         v.addWidget(self.arch_box)
 
         self.conv_box = QtWidgets.QGroupBox("Conventional multi-start")
@@ -457,7 +461,8 @@ class MainWindow(QtWidgets.QMainWindow):
             spherize=self.spherize.isChecked() and self.spherize.isEnabled(),
             catalog=cat or None,
             architectures=tuple(n for n, cb in self.arch.items() if cb.isChecked()),
-            top_k=self.top_k.value(), stop_shift=self.stop_shift.isChecked(),
+            top_k=self.top_k.value(), n_elem=self.n_elem.value(),
+            stop_shift=self.stop_shift.isChecked(),
             bending_hops=self.hops.isChecked() and self.hops.isEnabled(),
             morph_iters=self.morph_iters.value(), glass_pull=self.glass_pull.value(),
             tmin=self.tmin.value(), tmax=self.tmax.value(), emin=self.emin.value(),

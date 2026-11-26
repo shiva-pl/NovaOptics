@@ -41,8 +41,9 @@ spans the whole path from "ideal phase" to "real lens":
 | **0 IDEAL** | one achromatic phase screen at the stop | the best a single ideal thin element can do |
 | **1 DISTRIBUTE** | split the power over N screens, optimize spacings and phase polynomials | phase screens are cheap and the landscape is smooth |
 | **2 COLOR** | dispersion homotopy `beta: 0 → 1` in phase space; each screen disperses like a thin lens of its assigned glass `(n_d, V_d)`, which is free | color correction and glass choice happen while elements are still ideal |
+| *(optional)* **GROW** | split the screen whose split helps most into two half-phase screens, until N elements | in phase space a split is first-order exact and nearly continuous; in glass it would be a jump |
 | **3 MATERIALIZE** | homotopy `s: 0 → 1`: glass takes `s·phi_i` of each element's power, phase keeps `(1−s)·phi_i`; aspheric phase moves to aspheric sag as `b/(n−1)` | every step is a small, smooth deformation; at `s = 1` the phase is exactly zero |
-| **4 CATALOG** | pull `(n_d, V_d)` toward real glasses, snap (trying the 2 nearest per element), re-optimize | discrete choice made last, from a good continuous solution |
+| **4 CATALOG** | pull `(n_d, V_d)` toward real glasses, snap (candidates ranked by predicted merit), re-optimize | discrete choice made last, from a good continuous solution |
 | *(optional)* **SPHERIZE** | fade the aspheres out: `asph → (1−u)·asph` | for all-spherical designs |
 
 **Architecture search happens in phase space.** Stages 1–2 run for several power
