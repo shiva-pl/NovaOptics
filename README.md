@@ -91,10 +91,10 @@ no merit function sampled.
 
 | design | glasses | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [µm] | max distortion | wall time |
 |---|---|---|---|---|---|---|
-| phase-first, aspheric | N-SF66 / N-PK51 / SF56A | **0.102** | **0.157** | 2.9 | 0.48% | 1184 s |
-| conventional, aspheric | N-LASF41 / N-SF5 / N-LASF44 | 0.184 | 0.213 | 4.5 | 0.24% | 153 s |
-| phase-first, spherical (asphere fade) | N-LASF41 / SF56A / N-LASF31A | **0.281** | **0.372** | 5.8 | 0.71% | 243 s* |
-| conventional, spherical | N-LASF41 / N-SF6 / N-LASF31A | 0.311 | 0.431 | 5.9 | 0.80% | 73 s |
+| phase-first, aspheric | N-SF66 / N-PK51 / SF56A | **0.102** | **0.157** | 2.9 | 0.51% | 84 s |
+| conventional, aspheric | N-LASF41 / N-SF5 / N-LASF44 | 0.184 | 0.213 | 4.5 | 0.24% | 31 s |
+| phase-first, spherical (asphere fade) | N-LASF41 / SF56A / N-LASF31A | **0.281** | **0.372** | 5.8 | 0.71% | 22 s* |
+| conventional, spherical | N-LASF41 / N-SF6 / N-LASF31A | 0.311 | 0.431 | 5.9 | 0.80% | 9 s |
 
 Both aspheric designs get a stop shift on the glass system (see *Stop shift*); neither
 spherical design does. The aspheric phase-first design comes from the `−++`
@@ -109,7 +109,8 @@ curvature in the morph (see *Diagnostics*), real catalog glass with a
 catalog-derived dispersion model, gradual glass snapping (see *Real glasses*) and a
 stop shift on the glass system account for the difference.
 
-\* on top of the aspheric run. Times are on 4 CPU cores and include JIT compilation.
+\* on top of the aspheric run. Times are on 4 CPU cores with a warm JAX compilation
+cache (see *Performance*); the whole example takes 280 s from a cold cache.
 Full prescriptions are in [`examples/output/results.md`](examples/output/results.md).
 
 ![performance, spherical](examples/output/performance_spherical.png)
@@ -392,6 +393,39 @@ improve the final designs (0.106 / 0.161 aspheric and 0.307 / 0.394 spherical, v
 off-by-default option (`bending_hops=True`): insurance against a bad basin, not a gain
 when the morph already did well.
 
+## Performance
+
+Profiling one architecture path of the aspheric pipeline (236 s originally) showed
+that the optimizer's numerics were only about 19% of the time: 42% was XLA
+compilation and 39% was Python-side overhead (unjitted summaries, re-tracing). The
+algorithm was not the bottleneck, so the gains come from the implementation:
+
+| change | effect |
+|---|---|
+| implicit differentiation of chief-ray aiming (`custom_jvp`) instead of differentiating through Newton | Jacobian program several times smaller, compiles faster |
+| Newton loops (aiming, asphere intercepts) as `lax.fori_loop`, not unrolled | smaller programs, faster compiles |
+| jit-compiled summaries; compiled residual / Jacobian reused per layout (LRU, per-entry lock) | no re-tracing; bounded memory |
+| persistent JAX compilation cache (`~/.cache/novaoptics/jax`, `NOVAOPTICS_JAX_CACHE`) | second and later runs skip most compiles |
+| independent optimizations run in threads (`parallel.pmap`): architectures, snap candidates, stop positions, bending-hop alternatives, multi-starts | 1.7× with 2 threads, 2.1× with 4 (XLA releases the GIL) |
+
+One path: 236 s → 61.5 s; the full example: ~1700 s → 280 s cold, 179 s warm, with
+identical results. A Jacobian is now about 25 ms (34 parameters, ~3400 residuals) and
+Jacobians are about 60% of the remaining optimizer time.
+
+**Is Levenberg–Marquardt the right algorithm?** Yes for this problem: a few dozen
+parameters, thousands of residuals, an exact Jacobian from forward-mode AD, and a
+continuation that keeps every solve close to a minimum. LM with Marquardt damping
+converges in a handful of iterations per continuation step. Tried and reverted:
+Nielsen damping updates (final 0.112 vs 0.102 waves) and a looser stopping tolerance
+(1e-7: 0.108); both stop earlier along the morph and lose quality downstream.
+`vmap`-batching independent optimizations gave no speedup on the CPU (it may on a GPU);
+threads did.
+
+**C++ / AVX-512.** With compile time and overhead gone, a hand-written tracer with
+forward-mode dual numbers vectorized over rays could plausibly give another 2–3× on
+the Jacobians, at the cost of re-implementing the tracer, the asphere and aiming
+derivatives and the merit. That is deferred until the method has settled.
+
 ## Layout
 
 ```
@@ -418,13 +452,14 @@ tests/                       physics and gradient checks
 
 JAX runs on the CPU by default (set in `novaoptics/__init__.py`; set `JAX_PLATFORMS`
 to override). The optimization is many small, sequential, latency-bound steps, and on
-a GPU the example ran about 1.5× slower than on the CPU.
+a GPU the example ran about 1.5× slower than on the CPU. `NOVAOPTICS_THREADS` sets the
+number of worker threads (default: CPU count).
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest
-python examples/design_triplet.py          # ~15-20 min on 4 CPU cores
+python examples/design_triplet.py          # ~5 min on 4 CPU cores (3 min with a warm cache)
 python examples/design_triplet.py --quick  # smoke test
 ```
 
@@ -432,8 +467,8 @@ python examples/design_triplet.py --quick  # smoke test
 
 * **Model scope.** Rotationally symmetric systems, object at infinity, spherical
   surfaces with optional even aspheres on rear surfaces. There is no vignetting,
-  ghost or tolerance analysis yet. Glass dispersion is a two-term Cauchy model from
-  `(n_d, V_d)`, and the catalog is a small built-in list of nominal values.
+  ghost or tolerance analysis yet. Glasses come from one AGF catalog (SCHOTT,
+  preferred only); refractiveindex.info data is not wired in yet.
 * **Pupil.** Chief-ray aiming is exact, but the pupil grid is a circle on the
   incoming beam, so pupil aberrations are not modelled.
 * **Phase-space ranking is blind to "sphere-friendliness".** The best aspheric
