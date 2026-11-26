@@ -1,7 +1,6 @@
 """Diffraction analysis against closed forms: Airy pattern, diffraction-limited MTF,
 Strehl of pure defocus, and PSF-vs-ray centroid consistency."""
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
