@@ -429,6 +429,41 @@ forward-mode dual numbers vectorized over rays could plausibly give another 2–
 the Jacobians, at the cost of re-implementing the tracer, the asphere and aiming
 derivatives and the merit. That is deferred until the method has settled.
 
+## Surface engine (general systems)
+
+`novaoptics.engine` is a general sequential ray tracer, the base for multi-element,
+reflective and off-axis systems. The phase-first pipeline above still uses the element
+model, and `engine.convert.from_layout` turns its designs into engine systems; the two
+tracers agree to 1e-14 mm on all four example designs.
+
+* **Surfaces:** conic; even asphere; Forbes Q-type, type 0 = Qbfs (best-fit sphere,
+  slope-orthogonal) and type 1 = Qcon (conic plus sag-orthogonal); the polynomials
+  match Forbes' published Q0–Q4 to 1e-13. Phase: ideal (achromatic OPD), diffractive
+  (OPD ∝ order·λ), and linear gratings (lines/mm, any order).
+* **Interactions:** one law for refraction, reflection and phase,
+  `tangential(n'd') = tangential(n d) + ∇W`. Misses, total internal reflection and
+  evanescent orders are flagged, never NaN.
+* **Geometry:** coordinate breaks (decenter/tilt, either order) and signed thicknesses
+  after mirrors, as in common lens design programs; 2-D fields; chief-ray aiming to an
+  aiming point on the stop, so off-axis apertures of coaxial parents work. The aiming
+  is differentiated implicitly.
+* **Analysis** (`engine.analysis`): OPD maps; spot diagrams with RMS, GEO and Airy
+  radius; FFT PSF (polychromatic, with Strehl ratio), sampled from the real image-space
+  direction cosines; and sagittal/tangential MTF against the diffraction limit. These
+  are checked against the Airy first zero, the closed-form diffraction-limited MTF
+  (within 0.02), the exact Strehl ratio of quarter-wave defocus (0.81), and the ray
+  centroid. In the GUI they appear in the **Image analysis** tab.
+
+```python
+from novaoptics.engine import Builder, Spec, analysis
+b = Builder()
+b.mirror(c=-1/200, k=-1, stop=True, t=-100, sy=30)   # off-axis section of an f/5 parabola
+b.image()
+system, params = b.build()
+spec = Spec(epd=20, fields=((0, 0), (0, 0.5)), wavelengths=(0.5876,))
+res = analysis.analyze(params, system, spec, (0, 0.5))   # spot, OPD, PSF, MTF
+```
+
 ## GUI
 
 ```bash
@@ -445,13 +480,16 @@ screens turn into glass live (dashed magenta = ideal phase that remains). After 
 run, the slider scrubs through every step of a design's path. **Merit** shows the
 trajectory (one line per architecture while running), **Performance** compares the
 selected designs on a dense field grid (RMS wavefront error, spot, AD field curves,
-distortion), and **Prescription** and **Log** show the details. **Stop** takes
+distortion), **Image analysis** shows the spot diagram, OPD map, PSF and MTF of the
+selected design at a chosen field, and **Prescription** and **Log** show the details. **Stop** takes
 effect within one optimizer step. Designs can be saved and reopened as JSON, including
 their layout and catalog, and figures can be exported.
 
 ![GUI during a run](docs/gui_live_morph.png)
 
 ![GUI comparing designs](docs/gui_performance.png)
+
+![GUI image analysis](docs/gui_analysis.png)
 
 ## Layout
 
@@ -473,6 +511,9 @@ novaoptics/
   progress.py      snapshot listeners and cooperative cancel (for front ends)
   gui/runner.py    Qt-free run options, jobs, evaluation, JSON save/load
   gui/app.py       PySide6 main window
+  engine/          general sequential surface engine: system.py (surfaces, frames),
+                   trace.py, qpoly.py (Forbes Q), materials.py, analysis.py (spot,
+                   OPD, PSF, MTF), plots.py, convert.py
 examples/design_triplet.py   runs everything, writes examples/output/
 examples/diagnose.py         diagnostics report and figures
 tests/                       physics and gradient checks

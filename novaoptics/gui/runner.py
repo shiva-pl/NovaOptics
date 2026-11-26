@@ -59,7 +59,7 @@ class RunOptions:
         return C.Mech(tmin=self.tmin, emin=self.emin, gmin=self.gmin, tmax=self.tmax)
 
 
-@dataclass
+@dataclass(eq=False)
 class Design:
     """A finished design and everything the GUI shows about it."""
 

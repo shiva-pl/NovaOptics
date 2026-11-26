@@ -69,22 +69,24 @@ class Bridge(QObject):
 
 
 class Renderer(QObject):
-    """Computes ray geometry for the most recently requested view, off the GUI thread.
+    """Runs `fn(request)` for the most recently requested item, off the GUI thread.
 
-    Requests that arrive while it is busy replace each other: only the newest is drawn.
+    Requests that arrive while it is busy replace each other: only the newest is
+    computed.  Used for layout ray geometry and for the image analyses.
     """
 
     ready = Signal(object, object)
 
-    def __init__(self):
+    def __init__(self, fn, name="novaoptics-render"):
         super().__init__()
+        self._fn = fn
         self._cv = threading.Condition()
         self._pending = None
-        threading.Thread(target=self._loop, daemon=True, name="novaoptics-render").start()
+        threading.Thread(target=self._loop, daemon=True, name=name).start()
 
-    def request(self, view: View):
+    def request(self, item):
         with self._cv:
-            self._pending = view
+            self._pending = item
             self._cv.notify()
 
     def _loop(self):
@@ -92,12 +94,36 @@ class Renderer(QObject):
             with self._cv:
                 while self._pending is None:
                     self._cv.wait()
-                view, self._pending = self._pending, None
+                item, self._pending = self._pending, None
             try:
-                geo = P.layout_geometry(view.params, view.layout, view.spec, view.beta)
+                out = self._fn(item)
             except Exception as e:  # noqa: BLE001 - shown in the plot
-                geo = e
-            self.ready.emit(view, geo)
+                out = e
+            self.ready.emit(item, out)
+
+
+def _geometry(view):
+    return P.layout_geometry(view.params, view.layout, view.spec, view.beta)
+
+
+def _engine_model(d: R.Design):
+    """The design as a surface-engine system (cached on the design)."""
+    if getattr(d, "_engine", None) is None:
+        from ..engine import convert
+
+        sp = d.spec
+        d._engine = convert.from_layout(d.params, d.layout, sp.epd,
+                                        [f * sp.half_field_deg for f in sp.field_fracs],
+                                        sp.wavelengths)
+    return d._engine
+
+
+def _analysis(req):
+    from ..engine import analysis as EA
+
+    d, k = req
+    system, params, spec = _engine_model(d)
+    return EA.analyze(params, system, spec, spec.fields[k])
 
 
 class PlotPanel(QtWidgets.QWidget):
@@ -155,8 +181,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bridge.design.connect(self._on_design)
         self.bridge.log.connect(self._on_log)
         self.bridge.finished.connect(self._on_finished)
-        self.renderer = Renderer()
+        self.renderer = Renderer(_geometry)
         self.renderer.ready.connect(self._on_geometry)
+        self.analyzer = Renderer(_analysis, "novaoptics-analysis")
+        self.analyzer.ready.connect(self._on_analysis)
+        self._analysis_shown = None
 
         self._build_menu()
         split = QtWidgets.QSplitter(Qt.Horizontal)
@@ -349,6 +378,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.merit_plot, "Merit")
         self.perf_plot = PlotPanel((9, 6))
         self.tabs.addTab(self.perf_plot, "Performance")
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        lay.setContentsMargins(4, 4, 4, 4)
+        row = QtWidgets.QHBoxLayout()
+        self.field_box = QtWidgets.QComboBox()
+        self.field_box.currentIndexChanged.connect(lambda _: self._refresh_analysis())
+        self.analysis_status = QtWidgets.QLabel("")
+        row.addWidget(QtWidgets.QLabel("Field"))
+        row.addWidget(self.field_box)
+        row.addWidget(self.analysis_status, 1)
+        lay.addLayout(row)
+        self.analysis_plot = PlotPanel((9, 7))
+        lay.addWidget(self.analysis_plot, 1)
+        self.analysis_tab = w
+        self.tabs.addTab(w, "Image analysis")
         mono = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
         self.rx = QtWidgets.QPlainTextEdit(readOnly=True)
         self.rx.setFont(mono)
@@ -359,7 +403,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.log.setMaximumBlockCount(50000)
         self.log.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.tabs.addTab(self.log, "Log")
-        self.tabs.currentChanged.connect(lambda _: self._refresh_merit())
+        self.tabs.currentChanged.connect(lambda _: (self._refresh_merit(),
+                                                    self._refresh_analysis()))
         return self.tabs
 
     def _build_table(self):
@@ -572,6 +617,48 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_perf(sel)
         self._refresh_rx(sel)
         self._refresh_merit()
+        self._sync_fields(d)
+        self._refresh_analysis()
+
+    # ------------------------------------------------------------------ image analysis
+    def _sync_fields(self, d):
+        labels = [f"{f * d.spec.half_field_deg:.1f}°" for f in d.spec.field_fracs]
+        if [self.field_box.itemText(i) for i in range(self.field_box.count())] != labels:
+            k = self.field_box.currentIndex()
+            self.field_box.blockSignals(True)
+            self.field_box.clear()
+            self.field_box.addItems(labels)
+            self.field_box.setCurrentIndex(min(max(k, 0), len(labels) - 1))
+            self.field_box.blockSignals(False)
+
+    def _refresh_analysis(self):
+        sel = self.selected()
+        if self.tabs.currentWidget() is not self.analysis_tab or not sel:
+            return
+        key = (sel[0], self.field_box.currentIndex())
+        if key == self._analysis_shown or key[1] < 0:
+            return
+        self._analysis_shown = key
+        self.analysis_status.setText(f"computing {sel[0].name} …")
+        self.analyzer.request(key)
+
+    def _on_analysis(self, key, res):
+        d, k = key
+        if key != self._analysis_shown:
+            return  # a newer request is on its way
+        fig = self.analysis_plot.figure
+        if isinstance(res, Exception):
+            self.analysis_plot.message(f"analysis failed: {res}")
+            self.analysis_status.setText("")
+            return
+        from ..engine.plots import analysis_figure
+
+        analysis_figure(fig, res["spot"], res["opd"], res["psf"], res["mtf"],
+                        f"{d.name} · field {self.field_box.itemText(k)}")
+        self.analysis_plot.canvas.draw_idle()
+        self.analysis_status.setText(
+            f"Strehl {res['psf']['strehl']:.3f} · RMS spot {res['spot']['rms_um']:.2f} µm · "
+            f"working F/{res['spot']['fno_working']:.2f}")
 
     def _refresh_rx(self, sel):
         out = []

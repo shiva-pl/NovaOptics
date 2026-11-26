@@ -70,6 +70,13 @@ def test_window_smoke():
     v = View(d.params, d.layout, d.spec, 1.0, "test")
     w._on_geometry(v, P.layout_geometry(d.params, d.layout, d.spec))
     assert w.layout_plot.figure.axes
+    from novaoptics.gui.app import _analysis
+
+    res = _analysis((d, 4))  # what the analysis tab computes, here synchronously
+    assert 0 < res["psf"]["strehl"] < 1 and res["spot"]["rms_um"] > 0
+    w._analysis_shown = (d, 4)
+    w._on_analysis((d, 4), res)
+    assert w.analysis_status.text().startswith("Strehl")
     opts = w.options()
     assert opts.workflow == "phase-first" and opts.spec().efl == 50.0
     w.close()
