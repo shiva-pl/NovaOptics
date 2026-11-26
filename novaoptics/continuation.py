@@ -423,14 +423,16 @@ def stage_snap(p, lay: Layout, spec: Spec, rec: Recorder, cfg_kw: dict, free_oth
     """
     from jax.flatten_util import ravel_pytree
 
-    from .optimize import _compiled, free_mask
+    from .optimize import _compiled, ensure_compiled, free_mask
 
     gs = lay.glass
     n, k = lay.n_elem, gs.k
     cfg = make_cfg(**cfg_kw)
     full, unravel = ravel_pytree(p)
     idx = free_mask(p, {"g": True})
-    res, jac = _compiled(lay, spec, unravel, tuple(int(i) for i in idx), None)[:2]
+    entry = _compiled(lay, spec, unravel, tuple(int(i) for i in idx), None)
+    ensure_compiled(entry, full[idx], full, cfg)
+    res, jac = entry[:2]
     r0 = np.asarray(res(full[idx], full, cfg))
     J = np.asarray(jac(full[idx], full, cfg))  # [R, n*k], g flattened row-major
     g0 = np.asarray(p["g"])

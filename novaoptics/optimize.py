@@ -8,6 +8,7 @@ only changes `cfg` values compiles once.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -27,6 +28,10 @@ from .system import Layout, Spec
 _CACHE: OrderedDict = OrderedDict()
 CACHE_SIZE = 16
 _LOCK = threading.Lock()  # optimizations may run in threads (see parallel.py)
+# XLA compiles of the residual Jacobian grow quickly with the number of elements (a
+# 6-element program needs several GB while compiling); threads still optimize in
+# parallel, but at most this many compiles run at the same time.
+_COMPILE_SLOTS = threading.BoundedSemaphore(int(os.environ.get("NOVAOPTICS_COMPILES", "2")))
 # Relative cost reduction regarded as converged.  Kept tight: the morph is a homotopy,
 # and stopping its steps early (1e-7 was tried) steers it into a worse final design
 # (0.108 vs 0.102 waves), as the path-gap diagnostic predicts.
@@ -120,6 +125,25 @@ def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
     return _CACHE[key]
 
 
+def ensure_compiled(entry, x, full, cfg):
+    """Compile an entry's residual and Jacobian on first use (other threads wait for it;
+    at most NOVAOPTICS_COMPILES compiles at once).  Returns the compile time, or 0."""
+    if entry[2]:
+        return 0.0
+    with entry[3]:
+        if entry[2]:
+            return 0.0
+        with _COMPILE_SLOTS:
+            tc = time.perf_counter()
+            jax.block_until_ready(entry[0](x, full, cfg))
+            J0 = jax.block_until_ready(entry[1](x, full, cfg))
+            tc = time.perf_counter() - tc
+        with _LOCK:
+            STATS.shapes.append((int(x.size), int(J0.shape[0])))
+        entry[2] = True
+        return tc
+
+
 def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verbose=False,
              lam=1e-3, tol=None, transform=None):
     """Minimize the merit over the `free` entries of `params` (Levenberg-Marquardt).
@@ -147,17 +171,10 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     t_start = clock()
     lt = {"compile": 0.0, "jac": 0.0, "res": 0.0, "solve": 0.0}
     ln = {"calls": 1, "compiles": 0, "iters": 0, "jac": 0, "res": 0, "rejected": 0}
-    if not entry[2]:  # first use: compile both functions once (other threads wait)
-        with entry[3]:
-            if not entry[2]:
-                tc = clock()
-                jax.block_until_ready(res(x, full, cfg))
-                J0 = jax.block_until_ready(jac(x, full, cfg))
-                lt["compile"] += clock() - tc
-                ln["compiles"] += 1
-                with _LOCK:
-                    STATS.shapes.append((int(x.size), int(J0.shape[0])))
-                entry[2] = True
+    tc = ensure_compiled(entry, x, full, cfg)
+    if tc:
+        lt["compile"] += tc
+        ln["compiles"] += 1
     tr = clock()
     r = res(x, full, cfg)
     cost = float(r @ r)
