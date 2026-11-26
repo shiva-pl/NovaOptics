@@ -18,7 +18,6 @@ import numpy as np
 from . import analysis as A
 from . import glass as G
 from .continuation import Mech, Recorder, _glass_vars, stage_catalog
-from .merit import make_cfg
 from .optimize import optimize
 from .system import Layout, Spec, nearest_in_space, new_params, set_glass
 
@@ -54,8 +53,7 @@ def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech
     else:
         lay = Layout(n_elem=3, stop_index=1, aspheres=aspheres, glass=glass)
     rng = np.random.default_rng(seed)
-    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                   w_content=mech.w_content)
+    cfg = mech.cfg()
     free = {k: True for k in _glass_vars(lay, glass=free_glass)}
     runs = []
     t0 = time.time()
@@ -74,7 +72,7 @@ def conventional(spec: Spec, n_starts=12, aspheres=False, free_glass=False, mech
     if stop_shift and np.isfinite(best["score"]):
         from .continuation import stage_stop_shift
 
-        p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech, phase=False)
+        p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech)
     if free_glass:
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
     else:

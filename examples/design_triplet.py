@@ -68,8 +68,7 @@ def main(quick=False):
     # the wrong filter for spherical designs (+-+ spherizes well, the -+- family not).
     p, lay, rec, info = C.design_from_phase(spec, aspheres=True,
                                             top_k=1 if quick else len(C.PATTERNS),
-                                            glass=glass, snap="gradual",
-                                            glass_stop_shift=True)
+                                            glass=glass, stop_shift=True)
     record("phase-first, aspheric", p, lay, time.time() - t,
            f"architecture ranking in phase space: {info['architectures']}; chosen {info['chosen']}")
     rec_phase = rec

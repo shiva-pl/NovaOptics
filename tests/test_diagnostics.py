@@ -36,15 +36,8 @@ def cooke():
 
 
 PH = -LAY1.r_norm**2 / 100.0  # phase power of 1/50 mm^-1
-LAY2 = Layout(n_elem=1, stop_index=0, aspheres=True, two_screens=True)
 
 
-def two_screen(front=0.0, rear=0.0, front4=0.0, rear4=0.0, c1=0.0, c2=0.0, t=5.0, gap=10.0):
-    p = new_params(LAY2, gaps=[gap], bfd=45.0, nd=1.5168, vd=64.17)
-    p.update(c1=jnp.array([c1]), c2=jnp.array([c2]), t=jnp.array([t]))
-    p["phase1"] = p["phase1"].at[0, 0].set(front).at[0, 1].set(front4)
-    p["phase"] = p["phase"].at[0, 0].set(rear).at[0, 1].set(rear4)
-    return p, LAY2
 CASES = {
     "spherical singlet, remote stop": singlet(c1=1 / 30, c2=-1 / 80, t=4.0),
     "aspheric singlet": singlet(c1=1 / 30, c2=-1 / 80, t=4.0, asph4=0.05),
@@ -52,9 +45,6 @@ CASES = {
     "phase screen, curved substrate": singlet(c2=-1 / 60, phase2=PH, phase4=0.02),
     "phase screen at the stop": singlet(c2=-1 / 60, phase2=PH, gap=0.0),
     "three-element triplet": cooke(),
-    "front screen only, thick flat slab": two_screen(front=PH, front4=0.02),
-    "two screens, curved thick element": two_screen(front=PH / 2, rear=PH / 2, front4=0.01,
-                                                    rear4=-0.01, c1=1 / 80, c2=-1 / 120),
 }
 
 
@@ -125,39 +115,3 @@ def test_element_waves_sum_to_total_and_are_differentiable():
     g = float(jax.grad(coma_e1)(c0))
     fd = float((coma_e1(c0 + h) - coma_e1(c0 - h)) / (2 * h))
     assert g == pytest.approx(fd, rel=1e-5)
-
-
-def test_content_penalty_enters_merit():
-    from novaoptics.merit import make_cfg, residuals
-
-    p, lay = cooke()
-    r0 = residuals(p, lay, SLOW, make_cfg(w_content=0.0))
-    r1 = residuals(p, lay, SLOW, make_cfg(w_content=1.0))
-    ew = np.asarray(D.element_waves(p, lay, SLOW))[:, :3]
-    assert float(r1 @ r1 - r0 @ r0) == pytest.approx(float(np.sum(ew**2)), rel=1e-9)
-
-
-def test_power_split_between_screens_is_nearly_bending_blind():
-    """Splitting power between two separated phase screens barely changes coma, unlike
-    bending a glass lens.  Ideal phase screens act like lenses of infinite index, and
-    the shape dependence of thin-lens coma and spherical aberration vanishes as
-    n -> infinity; it comes from refraction at curved surfaces of finite index."""
-    from novaoptics import analysis as A
-
-    a, lay = two_screen(front=PH, rear=0.0, t=0.0)
-    b, _ = two_screen(front=0.0, rear=PH, t=0.0)
-    assert float(A.paraxial_efl(a, lay, SLOW)) == pytest.approx(
-        float(A.paraxial_efl(b, lay, SLOW)), rel=1e-9)
-
-    def coma(p, lay):
-        return D.seidel_waves(D.seidel(p, lay, SLOW), SLOW)[1][1]
-
-    a, _ = two_screen(front=PH, rear=0.0, t=6.0)  # all power on the front screen
-    b, _ = two_screen(front=0.0, rear=PH, t=6.0)  # all power on the rear screen
-    d_split = abs(coma(a, lay) - coma(b, lay))
-    # glass singlet with the same power, bent between the equivalent shapes X = +1 / -1
-    n, phi = 1.5168, 1 / 50.0
-    g1, lg = singlet(c1=phi / (n - 1), c2=0.0, t=6.0)
-    g2, _ = singlet(c1=0.0, c2=-phi / (n - 1), t=6.0)
-    d_glass = abs(coma(g1, lg) - coma(g2, lg))
-    assert d_split < 0.1 * d_glass

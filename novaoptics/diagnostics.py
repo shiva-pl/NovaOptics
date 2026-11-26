@@ -99,11 +99,6 @@ def paraxial_surfaces(params, layout: Layout, spec: Spec, beta=1.0):
             nd_i = G.index_at(p, i, G.LAMBDA_D, 0.0, layout)
             # phase disperses like the element's glass: N(lambda)-1 = (N-1) kappa
             kap = {w: (glass[w] - 1.0) / (nd_i - 1.0) for w in wls}
-            if layout.two_screens:
-                # front screen: applied in air just before refraction into the glass,
-                # which is what the tracer's interface law does at the same point
-                out += _sweatt_pair(f"E{i}.F", z, p["c1"][i], p["phase1"][i], kap, wls, air,
-                                    layout, i)
             out.append(ParaxialSurface(f"E{i}.1", z, p["c1"][i], air, glass, element=i))
             z = z + p["t"][i]
             a4 = p["asph"][i][0] / layout.r_norm**4 if layout.aspheres else 0.0

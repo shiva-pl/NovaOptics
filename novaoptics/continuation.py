@@ -17,8 +17,12 @@ Stage 3  MATERIALIZE  homotopy s: 0 -> 1.  Element i carries total power phi_i; 
                       takes s*phi_i (real curvatures, thickness, Petzval from the trace),
                       ideal phase keeps (1-s)*phi_i plus (1-s)*aspheric terms.  At s = 1
                       the phase is identically zero: an all-spherical glass system.
-Stage 4  CATALOG      pull (n_d, V_d) to real catalog glasses, snap (trying the nearest
-                      candidates per element) and re-optimize.
+Stage 4  CATALOG      pull (n_d, V_d) to real catalog glasses, snap (candidates ranked by
+                      predicted merit) and re-optimize.  With a catalog the pull already
+                      ramps up during the morph, so the snap is a small step.
+
+Optional glass-system stages before CATALOG: STOP-SHIFT (stop placed by stop-shift
+theory) and BENDING HOPS (basin hopping over element bendings).
 
 Every step is recorded so the morph can be inspected and plotted afterwards.
 """
@@ -36,7 +40,7 @@ from . import analysis as A
 from . import glass as G
 from .merit import make_cfg, virtual_petzval_curvature
 from .optimize import clear_compiled, optimize
-from .system import Layout, Spec, glass_label, nearest_in_space, new_params, set_glass
+from .system import Layout, Spec, glass_label, new_params, set_glass
 
 
 @dataclass
@@ -75,17 +79,19 @@ class Recorder:
 
 @dataclass(frozen=True)
 class Mech:
-    """Manufacturing limits applied at the end of the morph [mm], and the
-    aberration-content weight used in every stage after IDEAL."""
+    """Manufacturing limits applied at the end of the morph [mm]."""
 
     tmin: float = 2.0
     emin: float = 1.0
     gmin: float = 1.0
     tmax: float = 8.0
-    # Weight of the per-element aberration-content penalty (see merit.py).  Large
-    # contributions that cancel between elements make tight tolerances, so this is
-    # a manufacturability setting as much as an optical one.
-    w_content: float = 0.0
+
+    def base(self):
+        """Merit configuration keywords of a finished glass system."""
+        return dict(beta=1.0, tmin=self.tmin, emin=self.emin, gmin=self.gmin, tmax=self.tmax)
+
+    def cfg(self, **kw):
+        return make_cfg(**self.base(), **kw)
 
 
 def _powers(phase, r_norm):
@@ -109,7 +115,7 @@ def _glasses(p, lay: Layout | None = None):
     return " ".join(f"{float(a):.3f}/{float(b):.1f}" for a, b in zip(p["nd"], p["vd"]))
 
 
-# --------------------------------------------------------------------------- stages
+# --------------------------------------------------------------------------- phase space
 
 def stage_ideal(spec: Spec, rec: Recorder, n_phase=4, r_norm=10.0, iters=60):
     lay = Layout(n_elem=1, stop_index=0, n_phase=n_phase, r_norm=r_norm)
@@ -132,7 +138,7 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
     free from here on.
     """
     # Continuous glasses stay in (n_d, V_d), which optimizes well; with a catalog its
-    # glass-map hull bounds them, and real glasses arrive by snapping after COLOR.
+    # glass-map hull bounds them, and real glasses arrive by snapping at the end.
     lay = Layout(n_elem=n_elem, stop_index=stop_index, n_phase=lay0.n_phase, r_norm=lay0.r_norm,
                  aspheres=aspheres, region=glass)
     gaps = np.full(n_elem, spacing)
@@ -141,7 +147,7 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
     pattern = np.ones(n_elem) / n_elem if pattern is None else np.asarray(pattern, float)
     pattern = pattern / pattern.sum()
     p = new_params(lay, gaps=gaps, bfd=float(p0["bfd"]))
-    p["nd"] = jnp.asarray(np.where(pattern > 0, 1.62, 1.62))
+    p["nd"] = jnp.full(n_elem, 1.62)
     p["vd"] = jnp.asarray(np.where(pattern > 0, 60.0, 36.0))
     # Split by optical power only: away from the stop the beam footprint exceeds the
     # region where the stage-0 polynomial was fitted, so its high orders would
@@ -149,8 +155,7 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
     p["phase"] = jnp.zeros((n_elem, lay.n_phase)).at[:, 0].set(p0["phase"][0, 0] * pattern)
     rec.add("distribute", 0, p, lay, 0.0, f"split into {n_elem} screens  "
             f"powers[1/m] {_powers(p['phase'], lay.r_norm)}", virtual_petzval)
-    cfg = make_cfg(beta=0.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
-                   w_content=mech.w_content)
+    cfg = make_cfg(beta=0.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval)
     free = {"phase": True, "gaps": True, "bfd": True, "nd": True}
     p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
     rec.add("distribute", 1, p, lay, 0.0,
@@ -160,55 +165,133 @@ def stage_distribute(p0, lay0: Layout, spec: Spec, rec: Recorder, n_elem=3, stop
 
 
 def stage_color(p, lay: Layout, spec: Spec, rec: Recorder, steps=5, iters=40, mech=Mech(),
-                virtual_petzval=1.0, w_axial=0.0):
+                virtual_petzval=1.0):
     free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
     for k, beta in enumerate(np.linspace(0, 1, steps + 1)[1:], start=1):
-        cfg = make_cfg(beta=beta, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
-                       w_content=mech.w_content, w_axial=w_axial)
+        cfg = make_cfg(beta=beta, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval)
         p, _ = optimize(p, lay, spec, cfg, free, iters=iters)
         rec.add("color", k, p, lay, beta, f"beta={beta:.2f}  glasses {_glasses(p, lay)}",
                 virtual_petzval)
     return p, lay
 
 
+# --------------------------------------------------------------------------- morph
+
 X_MAX = 4.0
 
 
-def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
-                     virtual_petzval=1.0, k=3, iters=60, w_axial=0.0, phase=True):
-    """STOP-SHIFT: place the aperture stop once axial color is corrected.
+def morph_to_params(z, cfg, layout: Layout):
+    """Homotopy between an ideal phase screen (s = 0) and a glass singlet (s = 1).
+
+    Design variables per element: total power phi, bending xi, curvature corrections
+    dc1/dc2, thickness t, glass (n_d, V_d) and aspheric phase b_k.  The glass carries
+    s*phi (thin-lens curvatures from phi, X and n_d, plus s*dc), the ideal phase carries
+    (1 - s)*phi plus (1 - s)*b_k.  With aspheres enabled the glass also takes s*b_k as
+    rear-surface aspheric sag.  Every s is a smooth deformation of the previous system,
+    and at s = 1 the phase is identically zero.
+    """
+    s = cfg["s"]
+    nd = G.nd_vec(z, layout)
+    dc = s * z["phi"] / (nd - 1.0)
+    # Shape factor X = (c1 + c2)/(c1 - c2), smoothly bounded.  While s is small the
+    # bending barely matters, so an unbounded X can drift to absurd values that turn
+    # into extreme menisci once the glass carries the power.
+    X = X_MAX * jnp.tanh(z["xi"])
+    c1 = 0.5 * (1.0 + X) * dc
+    c2 = 0.5 * (X - 1.0) * dc
+    if "dc1" in z:
+        # curvature corrections beyond the thin-lens rule (thick-lens effects)
+        c1 = c1 + s * z["dc1"]
+        c2 = c2 + s * z["dc2"]
+    a1 = -(1.0 - s) * z["phi"] * layout.r_norm**2 / 2.0
+    phase = jnp.concatenate([a1[:, None], (1.0 - s) * z["bhi"]], axis=1)
+    if layout.aspheres:
+        # Aspheric phase is handed to the rear surface: a thin element adds
+        # W = (n - 1) * sag, so b_k of phase corresponds to b_k/(n_d - 1) of sag.
+        asph = s * z["bhi"] / (nd[:, None] - 1.0)
+    else:
+        asph = jnp.zeros_like(z["bhi"])
+    return {"c1": c1, "c2": c2, "t": z["t"], "nd": nd, "vd": G.vd_vec(z, layout),
+            "phase": phase, "asph": asph, "gaps": z["gaps"], "bfd": z["bfd"]}
+
+
+def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters=30,
+                      mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80,
+                      glass_pull=0.0, xi0=None):
+    """Morph phase into glass (see `morph_to_params`).
+
+    xi0: initial bending variable per element (shape factor X = 4 tanh(xi)); default 0,
+    i.e. equiconvex/equiconcave.
+    glass_pull > 0 (catalog region set): the pull toward real catalog glasses ramps up
+    with the morph, nu = glass_pull * s^2, so glass discreteness is turned on gradually
+    while the lens takes shape and the final snap is a small step.
+    """
+    n = lay.n_elem
+    z = {
+        "phi": -2.0 * p["phase"][:, 0] / lay.r_norm**2,
+        "xi": jnp.zeros(n) if xi0 is None else jnp.asarray(xi0, dtype=float),
+        "bhi": p["phase"][:, 1:],
+        "t": jnp.zeros(n),
+        "nd": p["nd"],
+        "vd": p["vd"],
+        "gaps": p["gaps"],
+        "bfd": p["bfd"],
+        # Curvature corrections on top of the thin-lens rule (scaled by s): the path-gap
+        # diagnostic showed the thin-lens manifold alone costs 3-7x in merit mid-morph.
+        "dc1": jnp.zeros(n),
+        "dc2": jnp.zeros(n),
+    }
+    free = {k: True for k in z}
+    for k, s in enumerate(np.linspace(0.0, 1.0, steps + 1)[1:], start=1):
+        # The penalty acts on the *effective* aspheric phase (1-s)*b; dividing by
+        # (1-s)^2 keeps b itself bounded so it cannot blow up as s -> 1, and the
+        # factor s lets it start at zero so the first steps are gentle.
+        mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
+        cfg_kw = dict(s=s, beta=1.0, mu=mu, tmin=mech.tmin * s, emin=mech.emin * s,
+                      gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval,
+                      nu=glass_pull * s**2)
+        cfg = make_cfg(**cfg_kw)
+        z, _ = optimize(z, lay, spec, cfg, free, iters=iters, transform=morph_to_params)
+        p = morph_to_params(z, cfg, lay)
+        powers = " ".join(f"{float(v) * 1e3:+6.1f}" for v in z["phi"])
+        rec.add("materialize", k, p, lay, 1.0, f"s={s:.2f}  powers[1/m] {powers}",
+                virtual_petzval, extra={"z": dict(z), "cfg": cfg_kw, "iters": iters})
+    # polish as a plain glass system with independent curvatures
+    free = {k: True for k in _glass_vars(lay)}
+    p, _ = optimize(p, lay, spec, mech.cfg(), free, iters=polish_iters)
+    rec.add("materialize", steps + 1, p, lay, 1.0,
+            f"all-glass polish  glasses {_glasses(p, lay)}")
+    return p, lay
+
+
+# --------------------------------------------------------------------------- glass system
+
+def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(), k=3, iters=60):
+    """STOP-SHIFT on a glass system: place the aperture stop with stop-shift theory.
 
     Stop-shift theory (see stopshift.py) predicts the third-order coma, astigmatism and
-    field curvature for every stop position in closed form; with axial color corrected
-    the lateral color does not depend on the stop.  The `k` best predicted positions
-    and the current one are tried for real: the stop is moved there and the system
-    re-optimized with the full real-ray merit.  The best real result is kept, so the
-    stage can only improve the design.
+    field curvature for every stop position in air in closed form.  The `k` best
+    predicted positions and the current one are tried for real: the stop is moved
+    there and the system re-optimized with the full real-ray merit (curvatures,
+    thicknesses, spacings, aspheres, continuous glasses).  The best real result is
+    kept, so the stage can only improve the design.
 
-    phase=True: phase-space system (thin screens, virtual Petzval, phase free).
-    phase=False: a glass system (real thicknesses; the stop stays in air gaps;
-    curvatures, thicknesses, spacings, aspheres and continuous glasses re-optimized).
+    (Placing the stop in phase space was tried and misleads: thin, freely aspheric
+    screens want a different stop than thick glass elements.)
     """
     from . import stopshift as SS
     from .merit import residuals
 
-    vp = virtual_petzval if phase else 0.0
-    sc = SS.scan(p, lay, spec, beta=1.0, virtual_petzval=vp)
+    sc = SS.scan(p, lay, spec, beta=1.0, virtual_petzval=0.0)
     z_now = sc["current_z"]
     i_now = int(np.argmin(np.abs(sc["z"] - z_now)))
     cands = SS.candidates(sc, k=k)
-    if phase:
-        cfg = make_cfg(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=vp,
-                       w_content=mech.w_content, w_axial=w_axial)
-        free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in _gvars(lay)}}
-    else:
-        cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin,
-                       tmax=mech.tmax, w_content=mech.w_content, w_axial=w_axial)
-        free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
+    cfg = mech.cfg()
+    free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
     best = None
     for z in [z_now] + [c for c in cands if abs(c - z_now) > 0.5]:
-        # keep the current layout for the current position: with a stop exactly at a
-        # thin screen, a relayout could put it on the other side of that element
+        # keep the current layout for the current position: a relayout could put a stop
+        # that sits exactly at a vertex on the other side of that element
         q, lq = (p, lay) if z == z_now else SS.relayout(p, lay, z)
         q, _ = optimize(q, lq, spec, cfg, free, iters=iters)
         cost = float(np.sum(np.asarray(residuals(q, lq, spec, cfg)) ** 2))
@@ -220,11 +303,9 @@ def stage_stop_shift(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
         if best is None or cost < best[0]:
             best = (cost, q, lq, z, i)
     _, q, lq, z, i = best
-    rec.add("stop-shift" if phase else "stop-shift (glass)", 0, q, lq, 1.0,
+    rec.add("stop-shift", 0, q, lq, 1.0,
             f"stop {z_now:+.1f} -> {z:+.1f} mm (stop_index {lq.stop_index}); third-order "
-            f"merit {sc['merit'][i_now]:.3g} -> {sc['merit'][i]:.3g}; "
-            f"C_I={sc['CI'][i_now]:.2e} (lateral color stop-independent if ~0)",
-            vp, extra={"scan": sc})
+            f"merit {sc['merit'][i_now]:.3g} -> {sc['merit'][i]:.3g}", extra={"scan": sc})
     return q, lq
 
 
@@ -233,17 +314,16 @@ def stage_bending_hops(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
     """Basin hopping over element bendings on a glass system.
 
     The morph picks each element's bending basin early, when bending barely matters,
-    and cannot leave it later.  Both basins can be fully corrected in third order (the
-    bad one differs in fifth-order residuals), so third-order theory cannot choose
-    between them, but the real-ray merit can.  For each element in turn it is re-bent to
-    each shape factor in `X_alt` (power c1 - c2 kept), the system re-polished, and any
-    improvement of the merit kept (greedy).
+    and cannot leave it later.  Both basins can be fully corrected in third order (they
+    differ in fifth-order residuals), so third-order theory cannot choose between them,
+    but the real-ray merit can.  For each element in turn, every shape factor in
+    `X_alt` is tried from the same starting design (power c1 - c2 kept, system
+    re-polished), and the best improvement of the merit is kept.
     """
     from .bending import rebend
     from .merit import residuals
 
-    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                   w_content=mech.w_content)
+    cfg = mech.cfg()
     free = {v: True for v in _glass_vars(lay, glass=lay.glass is None)}
 
     def cost(q):
@@ -258,132 +338,40 @@ def stage_bending_hops(p, lay: Layout, spec: Spec, rec: Recorder, mech=Mech(),
     rec.add(label, 0, p, lay, 1.0, "before")
     moves = []
     for i in range(lay.n_elem):
-        X_now = shape(best, i)
+        base, X_now, found = best, shape(best, i), None
         for X in X_alt:
             if abs(X - X_now) < 0.75:
                 continue
-            q, _ = optimize(rebend(best, i, X), lay, spec, cfg, free, iters=iters)
+            q, _ = optimize(rebend(base, i, X), lay, spec, cfg, free, iters=iters)
             c = cost(q)
             if c < best_cost:
-                moves.append(f"E{i} {X_now:+.1f}->{shape(q, i):+.1f}")
-                best, best_cost = q, c
-                X_now = shape(best, i)
+                best, best_cost, found = q, c, shape(q, i)
+        if found is not None:
+            moves.append(f"E{i} {X_now:+.1f}->{found:+.1f}")
     rec.add(label, 1, best, lay, 1.0,
             "kept: " + (", ".join(moves) if moves else "no improving hop"))
     return best, lay
 
 
-def morph_to_params(z, cfg, layout: Layout):
-    """Homotopy between an ideal phase screen (s = 0) and a glass singlet (s = 1).
-
-    Design variables per element: total power phi, bending xi, thickness t,
-    glass (n_d, V_d) and aspheric phase b_k.  The glass carries s*phi (thin-lens
-    curvatures from phi, X and n_d), the ideal phase carries (1 - s)*phi plus
-    (1 - s)*b_k.  With aspheres enabled the glass also takes s*b_k as rear-surface
-    aspheric sag.  Every s is a smooth deformation of the previous system, and at
-    s = 1 the phase is identically zero.
-    """
-    s = cfg["s"]
-    nd = G.nd_vec(z, layout)
-    dc = s * z["phi"] / (nd - 1.0)
-    # Shape factor X = (c1 + c2)/(c1 - c2), smoothly bounded.  While s is small the
-    # bending barely matters, so an unbounded X can drift to absurd values that turn
-    # into extreme menisci once the glass carries the power.
-    X = X_MAX * jnp.tanh(z["xi"])
-    c1 = 0.5 * (1.0 + X) * dc
-    c2 = 0.5 * (X - 1.0) * dc
-    if "dc1" in z:
-        # optional curvature corrections beyond the thin-lens rule (thick-lens effects)
-        c1 = c1 + s * z["dc1"]
-        c2 = c2 + s * z["dc2"]
-    a1 = -(1.0 - s) * z["phi"] * layout.r_norm**2 / 2.0
-    phase = jnp.concatenate([a1[:, None], (1.0 - s) * z["bhi"]], axis=1)
-    if layout.aspheres:
-        # Aspheric phase is handed to the rear surface: a thin element adds
-        # W = (n - 1) * sag, so b_k of phase corresponds to b_k/(n_d - 1) of sag.
-        asph = s * z["bhi"] / (nd[:, None] - 1.0)
-    else:
-        asph = jnp.zeros_like(z["bhi"])
-    out = {"c1": c1, "c2": c2, "t": z["t"], "nd": nd, "vd": G.vd_vec(z, layout),
-           "phase": phase, "asph": asph, "gaps": z["gaps"], "bfd": z["bfd"]}
-    if layout.glass is not None:
-        out["g"], out["gr"] = z["g"], z["gr"]
-    return out
-
-
-def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters=30,
-                      mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80,
-                      free_curvature=True, glass_pull=0.0, xi0=None):
-    """Morph phase into glass (see `morph_to_params`).
-
-    xi0: initial bending variable per element (shape factor X = 4 tanh(xi)); default 0,
-    i.e. equiconvex/equiconcave.
-    glass_pull > 0 (continuous glasses only): the pull toward real catalog glasses
-    ramps up with the morph, nu = glass_pull * s^2, so glass discreteness is turned on
-    gradually while the lens takes shape and the final snap is a small step.
-    """
-    n = lay.n_elem
-    z = {
-        "phi": -2.0 * p["phase"][:, 0] / lay.r_norm**2,
-        "xi": jnp.zeros(n) if xi0 is None else jnp.asarray(xi0, dtype=float),
-        "bhi": p["phase"][:, 1:],
-        "t": jnp.zeros(n),
-        "nd": p["nd"],
-        "vd": p["vd"],
-        "gaps": p["gaps"],
-        "bfd": p["bfd"],
-    }
-    if lay.glass is not None:
-        z["g"], z["gr"] = p["g"], p["gr"]
-    if free_curvature:
-        # Curvature corrections on top of the thin-lens rule (scaled by s): the path-gap
-        # diagnostic showed the thin-lens manifold alone costs 3-7x in merit mid-morph.
-        z["dc1"] = jnp.zeros(n)
-        z["dc2"] = jnp.zeros(n)
-    # With a catalog the glasses were snapped in phase space and stay fixed (real
-    # glasses throughout the morph); in (n_d, V_d) mode they remain free.
-    fixed = ("nd", "vd", "g", "gr") if lay.glass is not None else ()
-    free = {k: True for k in z if k not in fixed}
-    for k, s in enumerate(np.linspace(0.0, 1.0, steps + 1)[1:], start=1):
-        # The penalty acts on the *effective* aspheric phase (1-s)*b; dividing by
-        # (1-s)^2 keeps b itself bounded so it cannot blow up as s -> 1, and the
-        # factor s lets it start at zero so the first steps are gentle.
-        mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
-        cfg_kw = dict(s=s, beta=1.0, mu=mu, tmin=mech.tmin * s, emin=mech.emin * s,
-                      gmin=mech.gmin, tmax=mech.tmax, virtual_petzval=virtual_petzval,
-                      w_content=mech.w_content, nu=glass_pull * s**2)
-        cfg = make_cfg(**cfg_kw)
-        z, _ = optimize(z, lay, spec, cfg, free, iters=iters, transform=morph_to_params)
-        p = morph_to_params(z, cfg, lay)
-        powers = " ".join(f"{float(v) * 1e3:+6.1f}" for v in z["phi"])
-        rec.add("materialize", k, p, lay, 1.0, f"s={s:.2f}  powers[1/m] {powers}",
-                virtual_petzval, extra={"z": dict(z), "cfg": cfg_kw, "iters": iters})
-    # polish as a plain glass system with independent curvatures
-    free = {k: True for k in _glass_vars(lay, glass=lay.glass is None)}
-    cfg = make_cfg(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                   w_content=mech.w_content)
-    p, _ = optimize(p, lay, spec, cfg, free, iters=polish_iters)
-    rec.add("materialize", steps + 1, p, lay, 1.0,
-            f"all-glass polish  glasses {_glasses(p, lay)}")
-    return p, lay
-
+# --------------------------------------------------------------------------- glasses
 
 def stage_catalog(p, lay: Layout, spec: Spec, rec: Recorder, candidates=2, iters=100,
                   mech=Mech(), pull=(1e-3, 1e-2, 1e-1, 1.0, 10.0)):
+    """Pull continuous glasses to the catalog and snap to real glasses.
+
+    With a catalog region (`lay.region`): pull in (n_d, V_d), convert exactly to the PCA
+    glass space and snap with `stage_snap`.  With exact catalog glasses (`lay.glass`):
+    re-check neighbours with `stage_snap`.  Otherwise the built-in (n_d, V_d) list.
+    """
+    base = mech.base()
     if lay.glass is None and lay.region is not None:
-        base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                    w_content=mech.w_content)
         p = pull_to_catalog(p, lay, spec, rec, base, {k: True for k in _glass_vars(lay)},
                             "catalog", pulls=pull)
         p, lay = to_glass_space(p, lay, lay.region)  # continuous (n_d, V_d) -> exact PCA
     if lay.glass is not None:
-        cfg_kw = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                      w_content=mech.w_content)
-        return stage_snap(p, lay, spec, rec, cfg_kw, _glass_vars(lay, glass=False), "catalog",
+        return stage_snap(p, lay, spec, rec, base, _glass_vars(lay, glass=False), "catalog",
                           iters=iters)
     free = {k: True for k in _glass_vars(lay)}
-    base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                w_content=mech.w_content)
     for k, nu in enumerate(pull, start=1):
         p, _ = optimize(p, lay, spec, make_cfg(nu=nu, **base), free, iters=30)
         rec.add("catalog", k, p, lay, 1.0, f"glass pull nu={nu:.0e}  glasses {_glasses(p)}")
@@ -509,11 +497,11 @@ def from_glass_space(p, lay: Layout):
 
 
 def to_glass_space(p, lay: Layout, gs):
-    """Re-express (n_d, V_d) Cauchy glasses exactly in a PCA glass space.
+    """Re-express continuous (n_d, V_d) glasses exactly in a PCA glass space.
 
-    Each element's Cauchy index curve on the glass-space grid is projected onto the
-    principal directions (g) and the remainder kept as the fixed residual (gr), so the
-    optical system is unchanged; afterwards the glasses can be snapped to the catalog.
+    Each element's index curve on the glass-space grid is projected onto the principal
+    directions (g) and the remainder kept as the fixed residual (gr), so the optical
+    system is unchanged; afterwards the glasses can be snapped to the catalog.
     """
     lay_g = dataclasses.replace(lay, glass=gs)
     q = dict(p)
@@ -527,6 +515,8 @@ def to_glass_space(p, lay: Layout, gs):
     return q, lay_g
 
 
+# --------------------------------------------------------------------------- spherical
+
 def fade_aspheres(z, cfg, layout: Layout):
     """Homotopy that removes rear-surface aspheres: asph = (1 - u) * a."""
     p = dict(z)
@@ -535,7 +525,7 @@ def fade_aspheres(z, cfg, layout: Layout):
 
 
 def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40, mech=Mech(),
-                   mu_a=1e-4, polish_iters=150, stop_shift=False, bending_hops=False):
+                   mu_a=1e-4, polish_iters=150, bending_hops=False):
     """Aspheric design -> all-spherical design, by fading the aspheres out.
 
     The optimizer re-balances curvatures, thicknesses, spacings and glasses while
@@ -548,8 +538,7 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
         p, lay = from_glass_space(p, lay)
     # glasses stay fixed during the fade; the catalog stage runs afterwards
     free = {k: True for k in _glass_vars(lay, glass=False)}
-    base = dict(beta=1.0, tmin=mech.tmin, emin=mech.emin, gmin=mech.gmin, tmax=mech.tmax,
-                w_content=mech.w_content)
+    base = mech.base()
     z = dict(p)
     for k, u in enumerate(np.linspace(0, 1, steps + 1)[1:], start=1):
         # penalty on the effective coefficients, scaled so it bounds the variable a
@@ -566,13 +555,10 @@ def stage_spherize(p, lay: Layout, spec: Spec, rec: Recorder, steps=10, iters=40
     rec.add("spherize", steps + 1, p, lay_s, 1.0, "all-spherical polish")
     if bending_hops:
         p, lay_s = stage_bending_hops(p, lay_s, spec, rec, mech=mech)
-    if stop_shift:
-        p, lay_s = stage_stop_shift(p, lay_s, spec, rec, mech=mech, phase=False)
     return stage_catalog(p, lay_s, spec, rec, mech=mech)
 
 
-AXIAL_WEIGHT = 10.0  # w_axial of the "axial color first" ordering
-
+# --------------------------------------------------------------------------- pipeline
 
 PATTERNS = {
     "+-+": (2.0, -3.0, 2.0),
@@ -583,8 +569,7 @@ PATTERNS = {
 
 
 def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1, mech=Mech(),
-                          virtual_petzval=1.0, verbose=True, aspheres=False, glass=None,
-                          snap="early", stop_shift=False):
+                          virtual_petzval=1.0, verbose=True, aspheres=False, glass=None):
     """Run DISTRIBUTE + COLOR for several power patterns: cheap, all in phase space."""
     results = []
     for name, pat in patterns.items():
@@ -594,41 +579,7 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
         p, lay = stage_distribute(p0, lay0, spec, rec, n_elem=len(pat), stop_index=stop_index,
                                   mech=mech, virtual_petzval=virtual_petzval, pattern=pat,
                                   aspheres=aspheres, glass=glass)
-        if not stop_shift:
-            p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
-        else:
-            # Two color orderings, both followed by the stop shift; keep the better.
-            #  - merit color: polychromatic merit (axial color balanced against
-            #    spherochromatism), then place the stop;
-            #  - stop-shift ordering: correct primary axial color first (C_I -> 0, so
-            #    lateral color no longer depends on the stop), then place the stop.
-            # Neither wins for every architecture, and phase space is cheap.
-            best = None
-            p_d, lay_d, n_d = p, lay, len(rec.snaps)
-            for w_ax, tag in ((0.0, "merit color"), (AXIAL_WEIGHT, "axial color first")):
-                r = Recorder(spec, verbose=verbose)
-                r.snaps = list(rec.snaps[:n_d])
-                q, lq = stage_color(p_d, lay_d, spec, r, mech=mech,
-                                    virtual_petzval=virtual_petzval, w_axial=w_ax)
-                q, lq = stage_stop_shift(q, lq, spec, r, mech=mech,
-                                         virtual_petzval=virtual_petzval, w_axial=w_ax)
-                r.snaps[-1].note = f"[{tag}] " + r.snaps[-1].note
-                score = r.snaps[-1].mean_wfe
-                score = score if np.isfinite(score) else np.inf
-                if best is None or score < best[0]:
-                    best = (score, q, lq, r)
-            _, p, lay, rec = best
-        if glass is not None and snap == "early":
-            # snap to real glasses while still in phase space: cheap, and the
-            # architecture ranking then reflects glasses that actually exist
-            cfg_kw = dict(beta=1.0, gmin=2.0 * mech.gmin, virtual_petzval=virtual_petzval,
-                          w_content=mech.w_content)
-            p = pull_to_catalog(p, lay, spec, rec, cfg_kw,
-                                {"phase": True, "gaps": True, "bfd": True}, "glass-pull",
-                                virtual_petzval=virtual_petzval)
-            p, lay = to_glass_space(p, lay, glass)
-            p, lay = stage_snap(p, lay, spec, rec, cfg_kw, ("phase", "gaps", "bfd"),
-                                "glass-snap", virtual_petzval=virtual_petzval)
+        p, lay = stage_color(p, lay, spec, rec, mech=mech, virtual_petzval=virtual_petzval)
         results.append({"name": name, "params": p, "layout": lay, "rec": rec,
                         "score": rec.snaps[-1].mean_wfe})
         clear_compiled()
@@ -637,29 +588,22 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 
 
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
-                      patterns=PATTERNS, top_k=2, aspheres=False, glass=None, snap="early",
-                      morph_iters=30, glass_pull=0.1, stop_shift=False, glass_stop_shift=False,
-                      bending_hops=False, verbose=True):
+                      patterns=PATTERNS, top_k=2, aspheres=False, glass=None, morph_iters=30,
+                      glass_pull=0.1, stop_shift=False, bending_hops=False, verbose=True):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
-    `glass`: a catalog.GlassSpace of real catalog glasses.  Continuous stages use
-    (n_d, V_d) bounded by the catalog's glass-map hull.  snap="early" snaps to exact
-    catalog glasses in phase space after COLOR and keeps them fixed through the morph
-    (re-checked at the end); snap="late" keeps glasses continuous through the morph and
-    snaps once at the end; snap="gradual" is "late" plus a pull toward real glasses
-    that ramps up during the morph.  glass=None: the built-in small (n_d, V_d) list.
-
-    stop_shift: after COLOR, place the stop with stop-shift theory in phase space; each
-    architecture tries color by merit and axial color first, keeping the better.
-    glass_stop_shift: the same on the materialized glass system, before the catalog
-    stage (stop in air gaps, real thicknesses).
-    bending_hops: after the morph, re-bend each element to a few alternative shapes and
-    keep any real-merit improvement (`stage_bending_hops`).
+    glass: a catalog.GlassSpace of real catalog glasses.  Glasses stay continuous
+    (n_d, V_d), bounded by the catalog's glass-map hull, with the catalog's normal-glass
+    dispersion; a pull toward real glasses ramps up during the morph (`glass_pull`), and
+    the CATALOG stage snaps to exact catalog glasses.  None: the built-in (n_d, V_d) list.
+    stop_shift: place the stop on the materialized glass system (`stage_stop_shift`).
+    bending_hops: re-bend each element to alternative shapes after the morph and keep
+    real-merit improvements (`stage_bending_hops`).
     """
     rec0 = Recorder(spec, verbose=verbose)
     p0, lay0 = stage_ideal(spec, rec0)
     archs = explore_architectures(p0, lay0, spec, patterns, stop_index, mech, virtual_petzval,
-                                  verbose, aspheres, glass, snap, stop_shift)
+                                  verbose, aspheres, glass)
     if verbose:
         print("phase-space ranking:", ", ".join(f"{a['name']} {a['score']:.3f}" for a in archs))
     finals = []
@@ -670,11 +614,11 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         rec.snaps[:0] = rec0.snaps
         p, lay = stage_materialize(a["params"], a["layout"], spec, rec, mech=mech,
                                    virtual_petzval=virtual_petzval, iters=morph_iters,
-                                   glass_pull=glass_pull if snap == "gradual" else 0.0)
+                                   glass_pull=glass_pull if glass is not None else 0.0)
         if bending_hops:
             p, lay = stage_bending_hops(p, lay, spec, rec, mech=mech)
-        if glass_stop_shift:
-            p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech, phase=False)
+        if stop_shift:
+            p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
         finals.append((rec.snaps[-1].mean_wfe, a["name"], p, lay, rec))
         clear_compiled()  # each architecture compiles its own merit functions

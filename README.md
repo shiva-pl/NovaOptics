@@ -251,8 +251,8 @@ Continuous glasses are bounded by the catalog's convex hull in the glass map.
 Jacobian with respect to the glass coordinates, together with the glasses whose
 index curves are nearest. The most promising combinations are snapped exactly
 and re-optimized. Before snapping, a pull toward real glasses ramps up while
-everything else re-optimizes. With `snap="gradual"` (the default in the example)
-that pull already ramps up *during* the morph (ν ∝ s²).
+everything else re-optimizes. With a catalog, that pull already ramps up *during*
+the morph (ν ∝ s², `glass_pull`).
 
 What did not work, and why:
 
@@ -300,23 +300,25 @@ corrected, lateral color does not depend on the stop, and the stop is free for c
 astigmatism and field curvature. The closed-form sums agree with a full Seidel
 retrace at the moved stop to 10⁻⁶ (`tests/test_stopshift.py`).
 
-**STOP-SHIFT stage** (in phase space after COLOR, `design_from_phase(stop_shift=True)`;
-on the materialized glass system, `glass_stop_shift=True`):
+**STOP-SHIFT stage** (on the materialized glass system, before CATALOG;
+`design_from_phase(stop_shift=True)`):
 
-1. Scan every stop position in air, including across the thin phase screens (moving
-   past a screen is continuous in phase space).
-2. Score each on third-order coma, astigmatism and sagittal field curvature, with the
-   screens' virtual Petzval included.
+1. Scan every stop position in air.
+2. Score each on third-order coma, astigmatism and sagittal field curvature.
 3. Move the stop to the best few positions and re-optimize each with the real-ray
    merit. The current position is always a candidate, so the stage cannot make
    things worse.
+
+The experiments below also ran the stage in phase space (after COLOR, where the stop
+can move across the thin screens) and an "axial color first" ordering. Both were
+removed from the code after these results.
 
 **Finding: the merit does not correct axial color first.** After the original COLOR
 stage, primary axial color was still about 1.7 waves F−C. Seidel, exact paraxial and
 real-ray fits agree, so this is not a modelling error. The polychromatic merit
 *balances* axial color against spherochromatism instead of zeroing it, which
-violates the precondition of the stop-shift ordering. A total-axial-color term
-(`w_axial`) lets COLOR correct it explicitly. In phase space (mean RMS WFE on the
+violates the precondition of the stop-shift ordering. With a total-axial-color term
+in the merit, COLOR can correct it explicitly. In phase space (mean RMS WFE on the
 design surface):
 
 | architecture | color by merit → stop shift | axial color first → stop shift |
@@ -329,13 +331,11 @@ design surface):
 The stop shift helps whenever the stop has somewhere better to go. The stop-shift
 ordering wins outright for `++−`, which had always ranked last and becomes the best
 architecture. It hurts where the best design balances axial color against
-spherochromatism. Phase space is cheap, so with `stop_shift=True` each architecture
-tries both orderings and keeps the better.
+spherochromatism.
 
-**Where to apply it.** The stage works on phase-space systems and on materialized
-glass systems (`stage_stop_shift(phase=False)`: stop in air gaps, real thicknesses,
-glass-system variables). Full pipeline, aspheric and spherized designs, mean / max RMS
-WFE on the dense grid:
+**Where to apply it.** Phase space vs. the materialized glass system (stop in air
+gaps, real thicknesses, glass-system variables). Full pipeline, aspheric and spherized
+designs, mean / max RMS WFE on the dense grid:
 
 | stop shift in phase space | stop shift on the glass system | aspheric | spherical |
 |---|---|---|---|
@@ -352,9 +352,10 @@ WFE on the dense grid:
   (0.28 → 0.49), and a later glass-stage shift recovered most of it (0.31).
 * For spherical designs the glass-stage shift does not help either (0.286 vs 0.281,
   within run-to-run variation).
-* The example therefore uses `glass_stop_shift=True` only. The phase-space stage and
-  the axial-color-first ordering remain available (`stop_shift=True`). They are what
-  made `++−` competitive in phase space.
+* The pipeline therefore applies the stop shift on the glass system only
+  (`stop_shift=True`). The phase-space stage and the axial-color-first ordering were
+  removed. They made `++−` competitive in phase space, but did not produce better
+  final lenses.
 
 ## Element bending
 
@@ -369,13 +370,12 @@ predict.
 
 **What did not work, and why:**
 
-* **Two separated phase screens per element** (front and back face; `two_screens=True`,
-  validated in tracer and Seidel trace). Splitting the power between them changes coma
+* **Two separated phase screens per element** (front and back face; implemented and
+  validated in the tracer and Seidel trace, then removed). Splitting the power between them changes coma
   by only 6–20%, where bending a glass lens of the same power changes it ~10× and flips
   its sign. Ideal screens act like lenses of infinite index, and thin-lens shape
   dependence vanishes as n → ∞. The split carries almost no bending information.
-* **A third-order bending scan before the morph** (`bending.py`, 3,375 combinations in
-  1 s). Its predictions do not correlate with the outcome: the morph moves the bending a
+* **A third-order bending scan before the morph** (3,375 combinations in 1 s; removed). Its predictions do not correlate with the outcome: the morph moves the bending a
   long way. Seeding the morph with the scan's top picks gave 0.139 / 0.114 / 0.247, no
   better than blind starts.
 * **Third-order theory after the morph** cannot choose either. A design in the bad
@@ -399,7 +399,7 @@ novaoptics/
   glass.py         glass models: (n_d, V_d) Cauchy / normal-glass, PCA dispatch
   catalog.py       AGF reader, PCA glass space, normal-glass regression
   stopshift.py     stop-shift relations, stop-position scan, relayout
-  bending.py       bending scan (third order), element re-bending
+  bending.py       element re-bending (for bending hops)
   system.py        Layout / Spec / parameter pytree, prescription printout
   trace.py         differentiable ray tracer: sphere + asphere + phase interface
   analysis.py      wavefront error, spot, EFL, distortion, AD field curves

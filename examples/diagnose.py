@@ -111,7 +111,7 @@ def plot_elements(designs, names, spec, path):
 
 def morph_diagnostics(spec, glass, gaps_at=(0.25, 0.5, 0.75, 1.0)):
     p, lay, rec, info = C.design_from_phase(spec, aspheres=True, verbose=False, glass=glass,
-                                            snap="gradual", glass_stop_shift=True)
+                                            stop_shift=True)
     cand = next(c for c in info["candidates"] if c["name"] == info["chosen"])
     rec = cand["rec"]
     rec_s = C.Recorder(spec, verbose=False)
