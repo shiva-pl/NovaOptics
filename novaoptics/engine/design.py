@@ -28,11 +28,10 @@ import itertools
 import jax.numpy as jnp
 import numpy as np
 
-from .. import glass as G
 from ..optimize import optimize
 from ..parallel import pmap
 from . import merit as EM
-from .system import Spec, Surface, System, surface_params
+from .system import Spec, Surface, surface_params
 
 AIR = ("air", "", "vacuum")
 X_MAX = 4.0

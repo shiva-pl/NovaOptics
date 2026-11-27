@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import jax.numpy as jnp
-import numpy as np
 import pytest
 
 from novaoptics.engine import trace as T
