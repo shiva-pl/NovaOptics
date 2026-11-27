@@ -27,7 +27,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 from novaoptics.engine import design as D  # noqa: E402
 from novaoptics.engine.plots import draw_system  # noqa: E402
 from novaoptics.gui import runner as R  # noqa: E402
-from novaoptics.parallel import pmap  # noqa: E402
 from novaoptics.plot import SURFACE  # noqa: E402
 
 HERE = Path(__file__).parent
@@ -62,10 +61,10 @@ def main():
              not in D.AIR and s.material in D.AIR]
 
     def cem(rear):
-        q, Q = D.cement(prob, P, spec, rear)
+        q, Q = D.cement(prob, P, spec, rear, log=print)
         return D.cost(q, Q, spec), rear, q, Q
 
-    tried = pmap(cem, rears)
+    tried = [cem(r) for r in rears]  # each tries 8 glasses concurrently
     for c, rear, q, Q in tried:
         print(f"   cement behind surface {rear}: mean RMS WFE {D.mean_wfe(q, Q, spec):.3f}")
     c, rear, qc, Qc = min(tried, key=lambda x: x[0])

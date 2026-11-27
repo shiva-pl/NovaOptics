@@ -8,6 +8,7 @@ use when a name is not registered yet.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -36,12 +37,16 @@ def known(name) -> bool:
     return name in AIR or name == "model" or name in _REGISTRY
 
 
+_LOAD_LOCK = threading.Lock()
+
+
 def _ensure(name):
     if name in AIR or name == "model" or name in _REGISTRY:
         return
-    if DEFAULT_AGF.exists() and not getattr(_ensure, "loaded", False):
-        _ensure.loaded = True
-        register_agf(DEFAULT_AGF)
+    with _LOAD_LOCK:  # threads may trace systems concurrently
+        if DEFAULT_AGF.exists() and not getattr(_ensure, "loaded", False):
+            register_agf(DEFAULT_AGF)
+            _ensure.loaded = True  # only once every glass is registered
 
 
 def index(name: str, wl_um, sp=None):

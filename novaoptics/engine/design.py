@@ -10,7 +10,8 @@ model; here they are continued as general surface systems:
                         inserted into an air space (exactly no change), optimized, and
                         morphed into a glass singlet; every air space is tried
 * `cement`              a zero-thickness layer of a new glass is inserted behind an
-                        element (exactly no change) and grown into a cemented doublet
+                        element (exactly no change) and grown into a cemented doublet;
+                        the glass is chosen from a spread of catalog glasses
 * `snap_glasses`        model (n_d, V_d) glasses -> nearest preferred catalog glasses,
                         each combination re-optimized
 * `per_wavelength_focus` configurations with one wavelength each and its own image
@@ -305,20 +306,35 @@ def insert_cement_layer(problem: EM.Problem, params, rear, glass=(1.72, 30.0)):
     return dataclasses.replace(prob, morphing=((rear, rear + 1),)), p
 
 
-def cement(problem: EM.Problem, params, spec: Spec, rear, glass=(1.72, 30.0), steps=4,
-           iters=60, snap=True):
+def cement(problem: EM.Problem, params, spec: Spec, rear, glasses=None, steps=4, iters=60,
+           polish_iters=80, log=None):
     """Cement a new glass behind the element whose rear surface is `rear`.
 
-    A surface conformal with `rear` (same shape) is inserted in front of it with a
-    zero-thickness layer of model glass: exactly the old system.  The layer is then
-    grown (its minimum thickness ramped in over `steps`) with everything free."""
-    prob, p = insert_cement_layer(problem, params, rear, glass)
-    for s in np.linspace(0, 1, steps + 1)[1:]:
-        p, _ = optimize_design(prob, p, spec, iters=iters, s=float(s))
-    prob = dataclasses.replace(prob, morphing=())
-    p, _ = optimize_design(prob, p, spec, iters=80)
-    if snap:
-        prob, p = snap_glasses(prob, p, spec)
+    A surface conformal with `rear` is inserted in front of it with a zero-thickness
+    layer of the new glass: exactly the old system, whatever the glass.  The layer is
+    grown (its minimum thickness ramped in over `steps`) with everything free.  The
+    glass is chosen discretely: every glass in `glasses` (default: 8 preferred catalog
+    glasses spread over the glass map) is tried concurrently, the best merit wins.
+    (A continuous model glass ran to unphysical (n_d, V_d), or stalled at the edge of
+    the glass map when bounded by it.)"""
+    glasses = glasses or representative_glasses()
+
+    def grow(name):
+        prob, p = insert_cement_layer(problem, params, rear)
+        prob, p = replace_surface(prob, p, rear,
+                                  dataclasses.replace(prob.system.surfaces[rear], material=name))
+        for s in np.linspace(0, 1, steps + 1)[1:]:
+            p, _ = optimize_design(prob, p, spec, iters=iters, s=float(s))
+        prob = dataclasses.replace(prob, morphing=())
+        p, info = optimize_design(prob, p, spec, iters=polish_iters)
+        c = info.get("cost", np.inf)
+        return (c if np.isfinite(c) else np.inf), name, prob, p
+
+    tried = pmap(grow, glasses)
+    if log:
+        for c, name, prob, p in sorted(tried, key=lambda r: r[0]):
+            log(f"   cemented {name}: cost {c:.4g}, mean RMS WFE {mean_wfe(prob, p, spec):.3f}")
+    c, name, prob, p = min(tried, key=lambda r: r[0])
     return prob, p
 
 
@@ -338,6 +354,20 @@ def preferred_glasses():
               and "augmented reality" not in g.comment.lower()]
         _PREFERRED = [(g.name, g.nd, g.vd) for g in gl]
     return _PREFERRED
+
+
+def representative_glasses(k=8):
+    """k preferred glasses spread over the glass map: k-means in (n_d/0.1, V_d/10),
+    the glass nearest each cluster center."""
+    cat = preferred_glasses()
+    X = np.array([[n / 0.1, v / 10.0] for _, n, v in cat])
+    order = np.argsort(X[:, 1])
+    C = X[order[np.linspace(0, len(X) - 1, k).astype(int)]].copy()  # spread in V_d
+    for _ in range(50):
+        lab = np.argmin(((X[:, None, :] - C[None]) ** 2).sum(-1), axis=1)
+        C = np.array([X[lab == j].mean(0) if np.any(lab == j) else C[j] for j in range(k)])
+    pick = {int(np.argmin(((X - c) ** 2).sum(-1))) for c in C}
+    return [cat[j][0] for j in sorted(pick, key=lambda j: cat[j][2])]
 
 
 def nearest_glasses(nd, vd, k=3):
