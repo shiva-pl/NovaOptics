@@ -25,6 +25,8 @@ concatenation of every configuration's residuals:
 from __future__ import annotations
 
 import dataclasses
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 import jax
@@ -259,8 +261,41 @@ def residuals(params, problem: Problem, spec: Spec, cfg):
     return jnp.concatenate(out)
 
 
+_JIT: OrderedDict = OrderedDict()  # (name, problem, spec) -> compiled helper, LRU
+_JIT_LOCK = threading.Lock()
+
+
+def compiled(name, problem, spec, fn):
+    """fn(params) compiled once per (name, problem, spec).  Eager evaluation would
+    compile every primitive separately into JAX's own caches, which grow without bound
+    (each program holds memory mappings; a long design session ran out of them)."""
+    from ..optimize import memory_pressure, register_cache, release_memory
+
+    key = (name, problem, spec)
+    with _JIT_LOCK:
+        if key in _JIT:
+            _JIT.move_to_end(key)
+            return _JIT[key]
+        if not getattr(compiled, "registered", False):
+            register_cache(_JIT.clear)
+            compiled.registered = True
+    if memory_pressure():
+        release_memory()
+    f = jax.jit(fn)
+    with _JIT_LOCK:
+        _JIT[key] = f
+        while len(_JIT) > 24:
+            _JIT.popitem(last=False)
+    return f
+
+
 def rms_wfe(params, problem: Problem, spec: Spec):
     """Polychromatic RMS wavefront error [waves] per configuration and field."""
+    f = compiled("rms_wfe", problem, spec, lambda p: _rms_wfe(p, problem, spec))
+    return [np.asarray(a) for a in f(params)]
+
+
+def _rms_wfe(params, problem: Problem, spec: Spec):
     res = []
     for c, conf in enumerate(problem.configs):
         sp = config_spec(spec, conf)
@@ -271,5 +306,5 @@ def rms_wfe(params, problem: Problem, spec: Spec):
         opd = opd - jnp.sum(opd * ev["wt"], -1, keepdims=True)
         lw = jnp.asarray(sp.wl_weights) / np.sum(sp.wl_weights)
         ms = jnp.sum(opd**2 * ev["wt"], -1)  # [F, W]
-        res.append(np.asarray(jnp.sqrt(jnp.sum(ms * lw[None, :], -1))))
+        res.append(jnp.sqrt(jnp.sum(ms * lw[None, :], -1)))
     return res

@@ -234,6 +234,11 @@ def _compiled_locked(key, layout, spec, unravel, idx_key, transform, residual_fn
                 for clear in _CLEARABLE:
                     clear()
                 gc.collect()
+            if memory_pressure():
+                # last resort: JAX's own caches (eagerly evaluated primitives, other
+                # jitted functions); they recompile on their next call
+                jax.clear_caches()
+                gc.collect()
             _trim()
         idx = jnp.asarray(idx_key)
 

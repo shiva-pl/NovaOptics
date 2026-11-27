@@ -242,7 +242,8 @@ def to_json(d: Design) -> dict:
 
 
 def save(designs, path):
-    Path(path).write_text(json.dumps([to_json(d) for d in designs], indent=1))
+    rows = [engine_to_json(d) if isinstance(d, EngineDesign) else to_json(d) for d in designs]
+    Path(path).write_text(json.dumps(rows, indent=1))
 
 
 def from_json(row: dict, default_catalog=None) -> Design:
@@ -269,5 +270,191 @@ def from_json(row: dict, default_catalog=None) -> Design:
 def load(path, default_catalog=None):
     rows = json.loads(Path(path).read_text())
     rows = rows if isinstance(rows, list) else [rows]
-    return [from_json(r, default_catalog) for r in rows]
+    return [engine_from_json(r) if r.get("kind") == "engine" else from_json(r, default_catalog)
+            for r in rows]
 
+
+
+# --------------------------------------------------------------------------- engine designs
+
+@dataclass(eq=False)
+class EngineDesign:
+    """A design held as a general surface system (imported, edited, cemented, grown or
+    multi-configuration).  Same interface as `Design` for the GUI."""
+
+    name: str
+    problem: object  # engine.merit.Problem
+    params: dict  # {"s": surface dicts, "mc": configuration values}
+    spec: object  # engine.system.Spec
+    seconds: float = 0.0
+    note: str = ""
+    catalog: str | None = None
+    snaps: list = field(default_factory=list)
+    perf: dict = field(default_factory=dict)
+    free: dict = None  # variables marked in the lens data editor (None: the default set)
+
+    @property
+    def system(self):
+        return self.problem.system
+
+    @property
+    def prescription(self) -> str:
+        return engine_prescription(self.problem, self.params)
+
+
+def engine_prescription(problem, params) -> str:
+    from ..engine import merit as EM
+
+    S = problem.system.surfaces
+    lines = [f"{'surf':<5}{'type':<8}{'R [mm]':>12}{'t [mm]':>10}  {'material':<14}{'conic':>9}"
+             f"  label"]
+    for i, (s, p) in enumerate(zip(S, params["s"])):
+        c = float(p["c"])
+        r = "inf" if abs(c) < 1e-12 else f"{1 / c:.4f}"
+        kind = "CB" if s.shape == "cb" else ("mirror" if s.interact == "reflect" else s.shape)
+        mat = s.material if s.interact == "refract" else ("" if s.shape == "cb" else "-")
+        if s.material == "model":
+            mat = f"{float(p['nd']):.4f}/{float(p['vd']):.1f}"
+        extra = []
+        if s.stop:
+            extra.append("STOP")
+        if s.phase:
+            extra.append(f"{s.phase} phase")
+        if s.shape == "cb":
+            extra.append(" ".join(f"{k}={float(p[k]):g}" for k in ("dx", "dy", "tx", "ty", "tz")
+                                  if float(p[k]) != 0.0))
+        lines.append(f"{i:<5}{kind:<8}{r:>12}{float(p['t']):>10.4f}  {mat:<14}"
+                     f"{float(p['k']):>9.4g}  {s.label} {' '.join(extra)}".rstrip())
+    if len(problem.configs) > 1 or problem.configs[0].overrides:
+        lines += ["", "configurations:"]
+        for c, conf in enumerate(problem.configs):
+            vals = ", ".join(f"{k} = {float(v):.4f}" for k, v in params["mc"][c].items())
+            wl = "" if conf.wavelengths is None else \
+                " wavelengths " + "/".join(f"{w * 1e3:.0f}" for w in conf.wavelengths) + " nm"
+            efl = "" if conf.efl is None else (f" EFL {conf.efl:g}" if conf.efl else
+                                               " (no EFL target)")
+            lines.append(f"  {c + 1} {conf.name}: {vals}{wl}{efl}")
+    del EM
+    return "\n".join(lines)
+
+
+def evaluate_engine(d: EngineDesign, n_field=21) -> EngineDesign:
+    """Dense-field RMS wavefront error, RMS spot and distortion of every configuration."""
+    import dataclasses as dc
+
+    from ..engine import design as ED
+    from ..engine import merit as EM
+    from ..engine.trace import focal_length
+
+    prob, P, spec = d.problem, d.params, d.spec
+    rep = ED.dense_report(prob, P, spec, n_field=n_field)
+    fields = None
+    per = []
+    for c, conf in enumerate(prob.configs):
+        sp = EM.config_spec(spec, conf)
+        fmax = max(sp.fields, key=lambda f: np.hypot(*f))
+        r = np.hypot(*fmax)
+        u = np.asarray(fmax) / r if r > 0 else np.array([0.0, 1.0])
+        fields = tuple(tuple(float(v) for v in u * a) for a in np.linspace(0, r, n_field))
+        sp = dc.replace(sp, fields=fields, field_weights=None)
+        surfs = EM.config_surfaces(P, prob, c)
+        f = EM.compiled(f"evaluate {c}", prob, sp,
+                        lambda p, c=c, sp=sp: EM.evaluate_config(
+                            EM.config_surfaces(p, prob, c), prob.system, sp, prob.targets))
+        ev = {k: np.asarray(v) for k, v in f(P).items()}
+        img = ev["img"]  # [F, W, P, 2]
+        wt = ev["wt"]
+        lw = np.asarray(sp.wl_weights) / np.sum(sp.wl_weights)
+        wgt = lw[None, :, None] * wt[None, None, :]
+        wgt = wgt / wgt.sum(axis=(1, 2), keepdims=True)
+        cen = np.sum(img * wgt[..., None], axis=(1, 2), keepdims=True)
+        spot = np.sqrt(np.sum(np.sum((img - cen) ** 2, -1) * wgt, axis=(1, 2))) * 1e3
+        try:
+            efl = float(focal_length(surfs, prob.system, sp))
+        except Exception:  # noqa: BLE001 - e.g. afocal
+            efl = float("nan")
+        chief = np.linalg.norm(np.asarray(ev["chief"])[:, sp.iref], axis=-1)
+        th = np.deg2rad(np.linspace(0, r, n_field))
+        ideal = efl * np.tan(th)
+        dist = np.where(ideal > 1e-9, (chief - ideal) / np.where(ideal > 1e-9, ideal, 1), 0.0)
+        per.append({"name": conf.name or f"config {c + 1}", "field_deg": np.linspace(0, r, n_field),
+                    "rms_wfe": rep["per_config"][c], "rms_spot_um": spot, "distortion": dist,
+                    "efl": efl})
+    nanc = np.full(1, np.nan)
+    p0 = per[0]
+    d.perf = {"field_deg": p0["field_deg"], "rms_wfe": p0["rms_wfe"],
+              "rms_spot_um": p0["rms_spot_um"], "distortion": p0["distortion"],
+              "curve_deg": nanc, "tangential": nanc, "sagittal": nanc,
+              "mean_wfe": rep["mean_wfe"], "max_wfe": rep["max_wfe"],
+              "mean_spot_um": float(np.mean([q["rms_spot_um"].mean() for q in per])),
+              "efl": p0["efl"],
+              "max_distortion": float(max(np.max(np.abs(q["distortion"])) for q in per)),
+              "configs": per}
+    return d
+
+
+def engine_to_json(d: EngineDesign) -> dict:
+    import dataclasses as dc
+
+    prob = d.problem
+    t = prob.targets
+    return {
+        "kind": "engine", "design": d.name, "note": d.note, "seconds": d.seconds,
+        "catalog": d.catalog,
+        "surfaces": [dc.asdict(s) for s in prob.system.surfaces],
+        "z_launch": prob.system.z_launch,
+        "configs": [dc.asdict(c) for c in prob.configs],
+        "targets": {"efl": t.efl, "max_distortion": t.max_distortion,
+                    "max_track": t.max_track, "n_rings": t.n_rings, "n_arms": t.n_arms,
+                    "region": t.region is not None},
+        "spec": dc.asdict(d.spec),
+        "params": {"s": [{k: np.asarray(v).tolist() for k, v in p.items()} for p in d.params["s"]],
+                   "mc": [{k: float(v) for k, v in m.items()} for m in d.params["mc"]]},
+        "prescription": d.prescription,
+    }
+
+
+def _tuples(x):
+    return tuple(_tuples(v) for v in x) if isinstance(x, list) else x
+
+
+def engine_from_json(row: dict) -> EngineDesign:
+    from ..engine import merit as EM
+    from ..engine.system import Spec as ESpec
+    from ..engine.system import Surface, System
+
+    S = tuple(Surface(**s) for s in row["surfaces"])
+    system = System(S, row.get("z_launch", -20.0))
+    configs = tuple(EM.Config(**{k: _tuples(v) for k, v in c.items()}) for c in row["configs"])
+    t = dict(row["targets"])
+    region = None
+    if t.pop("region", False):
+        region = load_catalog(DEFAULT_AGF, ESpec())  # glass map of the default catalog
+    spec = ESpec(**{k: _tuples(v) for k, v in row["spec"].items()})
+    if region is not None:
+        region = load_catalog(DEFAULT_AGF, spec)
+    prob = EM.Problem(system, configs, EM.Targets(region=region, **t))
+    params = {"s": [{k: jnp.asarray(v, float) for k, v in p.items()} for p in row["params"]["s"]],
+              "mc": [{k: jnp.asarray(v, float) for k, v in m.items()} for m in row["params"]["mc"]]}
+    return EngineDesign(row["design"], prob, params, spec, row.get("seconds", 0.0),
+                        row.get("note", ""), row.get("catalog"))
+
+
+def engine_from_zmx(path) -> EngineDesign:
+    from ..engine import merit as EM
+    from ..engine import zmx
+
+    system, params, spec, info = zmx.load(path)
+    prob = EM.Problem(system, targets=EM.Targets())
+    name = info.get("name") or Path(path).stem
+    return EngineDesign(name, prob, EM.make_params(params, prob), spec,
+                        note=f"imported from {Path(path).name}")
+
+
+def engine_from_design(d: Design) -> EngineDesign:
+    """An element-model design as an engine design (to edit, grow, cement, configure)."""
+    from ..engine import design as ED
+
+    region = load_catalog(d.catalog, d.spec) if d.catalog else None
+    prob, P, spec = ED.from_element(d.params, d.layout, d.spec, region=region)
+    return EngineDesign(d.name + " (surfaces)", prob, P, spec, note=d.note, catalog=d.catalog)

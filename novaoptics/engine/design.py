@@ -105,13 +105,16 @@ def mean_wfe(problem, params, spec):
 
 def clear_semi_diameters(problem, params, spec):
     """Largest ray height on every surface over all configurations [mm]."""
-    sd = None
-    for c, conf in enumerate(problem.configs):
-        ev = EM.evaluate_config(EM.config_surfaces(params, problem, c), problem.system,
-                                EM.config_spec(spec, conf), problem.targets)
-        h = np.sqrt(np.max(np.sum(np.asarray(ev["local"])[..., :2] ** 2, -1), axis=(0, 1, 2)))
-        sd = h if sd is None else np.maximum(sd, h)
-    return sd
+    def fn(p):
+        sd = None
+        for c, conf in enumerate(problem.configs):
+            ev = EM.evaluate_config(EM.config_surfaces(p, problem, c), problem.system,
+                                    EM.config_spec(spec, conf), problem.targets)
+            h = jnp.sqrt(jnp.max(jnp.sum(ev["local"][..., :2] ** 2, -1), axis=(0, 1, 2)))
+            sd = h if sd is None else jnp.maximum(sd, h)
+        return sd
+
+    return np.asarray(EM.compiled("sd", problem, spec, fn)(params))
 
 
 def insert_surfaces(problem: EM.Problem, params, at, surfaces, values):

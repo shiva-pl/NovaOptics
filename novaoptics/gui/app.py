@@ -21,6 +21,7 @@ import time
 import traceback
 from dataclasses import dataclass
 
+import numpy as np
 from PySide6 import QtGui, QtWidgets
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
@@ -35,6 +36,7 @@ from .. import plot as P  # noqa: E402
 from .. import progress  # noqa: E402
 from ..continuation import PATTERNS  # noqa: E402
 from . import runner as R  # noqa: E402
+from .lensdata import LensDataEditor  # noqa: E402
 
 ARCH_NOTES = {"+-+": "Cooke-like", "-++": "negative front", "++-": "telephoto-like",
               "+++": "all positive"}
@@ -50,6 +52,8 @@ class View:
     spec: object
     beta: float
     title: str
+    engine: object = None  # an EngineDesign: drawn as a surface system
+    config: int = 0
 
 
 def _view(snap, spec, label):
@@ -65,6 +69,7 @@ class Bridge(QObject):
     snap = Signal(str, object)
     design = Signal(object)
     log = Signal(str)
+    refresh = Signal(object)  # a design whose evaluation changed
     finished = Signal(object)  # None, "cancelled" or a traceback string
 
 
@@ -103,11 +108,23 @@ class Renderer(QObject):
 
 
 def _geometry(view):
+    if view.engine is not None:
+        from ..engine.plots import system_geometry
+
+        system, surfs, spec = _engine_model(view.engine, view.config)
+        return system_geometry(surfs, system, spec)
     return P.layout_geometry(view.params, view.layout, view.spec, view.beta)
 
 
-def _engine_model(d: R.Design):
-    """The design as a surface-engine system (cached on the design)."""
+def _engine_model(d, config=0):
+    """(system, surface params, spec) of a design as a surface-engine system (element
+    designs are converted once and cached on the design)."""
+    if isinstance(d, R.EngineDesign):
+        from ..engine import merit as EM
+
+        c = min(config, len(d.problem.configs) - 1)
+        return (d.problem.system, EM.config_surfaces(d.params, d.problem, c),
+                EM.config_spec(d.spec, d.problem.configs[c]))
     if getattr(d, "_engine", None) is None:
         from ..engine import convert
 
@@ -121,9 +138,9 @@ def _engine_model(d: R.Design):
 def _analysis(req):
     from ..engine import analysis as EA
 
-    d, k = req
-    system, params, spec = _engine_model(d)
-    return EA.analyze(params, system, spec, spec.fields[k])
+    d, k, c = req
+    system, params, spec = _engine_model(d, c)
+    return EA.analyze(params, system, spec, spec.fields[min(k, len(spec.fields) - 1)])
 
 
 class PlotPanel(QtWidgets.QWidget):
@@ -181,6 +198,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bridge.design.connect(self._on_design)
         self.bridge.log.connect(self._on_log)
         self.bridge.finished.connect(self._on_finished)
+        self.bridge.refresh.connect(self._refresh_design)
         self.renderer = Renderer(_geometry)
         self.renderer.ready.connect(self._on_geometry)
         self.analyzer = Renderer(_analysis, "novaoptics-analysis")
@@ -216,6 +234,9 @@ class MainWindow(QtWidgets.QMainWindow):
         a.setShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Save))
         m.addAction("&Export current figure…", self.export_figure)
         m.addSeparator()
+        m.addAction("&Import .zmx…", self.import_zmx)
+        m.addAction("E&xport .zmx…", self.export_zmx)
+        m.addSeparator()
         a = m.addAction("&Quit", self.close)
         a.setShortcut(QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Quit))
         m = self.menuBar().addMenu("&Run")
@@ -223,6 +244,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_run.setShortcut("Ctrl+R")
         self.act_stop = m.addAction("&Stop", self.stop_run)
         self.act_stop.setShortcut("Ctrl+.")
+        m = self.menuBar().addMenu("&Design")
+        m.addAction("Edit as &surfaces (copy)", lambda: self.edit_as_surfaces())
+        m.addSeparator()
+        m.addAction("&Optimize", self.optimize_selected)
+        m.addAction("&Add an element", self.add_element_selected)
+        m.addAction("&Cement a glass to an element…", self.cement_selected)
+        m.addAction("&Snap model glasses to the catalog", self.snap_selected)
+        m.addAction("&Per-wavelength focus (one image plane per wavelength)",
+                    self.per_wavelength_selected)
         m = self.menuBar().addMenu("&Help")
         m.addAction("&About", self.about)
 
@@ -375,6 +405,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self.slider, 1)
         row.addWidget(self.step_label)
         row.addWidget(self.follow)
+        self.layout_config = QtWidgets.QComboBox()
+        self.layout_config.setToolTip("configuration (multi-configuration designs)")
+        self.layout_config.currentIndexChanged.connect(self._config_changed)
+        row.addWidget(self.layout_config)
         lay.addLayout(row)
         self.tabs.addTab(w, "Layout")
 
@@ -391,6 +425,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.analysis_status = QtWidgets.QLabel("")
         row.addWidget(QtWidgets.QLabel("Field"))
         row.addWidget(self.field_box)
+        self.analysis_config = QtWidgets.QComboBox()
+        self.analysis_config.currentIndexChanged.connect(self._config_changed)
+        row.addWidget(self.analysis_config)
         row.addWidget(self.analysis_status, 1)
         lay.addLayout(row)
         self.analysis_plot = PlotPanel((9, 7))
@@ -402,6 +439,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rx.setFont(mono)
         self.rx.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.tabs.addTab(self.rx, "Prescription")
+        self.lensdata = LensDataEditor()
+        self.lensdata.changed.connect(self._lensdata_changed)
+        self.lensdata.convert_requested.connect(self.edit_as_surfaces)
+        self.tabs.addTab(self.lensdata, "Lens data")
         self.log = QtWidgets.QPlainTextEdit(readOnly=True)
         self.log.setFont(mono)
         self.log.setMaximumBlockCount(50000)
@@ -595,7 +636,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(r, c, it)
         name = self._design_path_name(d)
-        if d.snaps:
+        if isinstance(d, R.EngineDesign):
+            self.paths[name] = [_EngineSnap(d)]
+        elif d.snaps:
             self.paths[name] = d.snaps
         else:
             self.paths[name] = [_FinalSnap(d)]
@@ -622,12 +665,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_perf(sel)
         self._refresh_rx(sel)
         self._refresh_merit()
+        self._sync_configs(d)
         self._sync_fields(d)
         self._refresh_analysis()
+        self.lensdata.show_design(d)
 
     # ------------------------------------------------------------------ image analysis
     def _sync_fields(self, d):
-        labels = [f"{f * d.spec.half_field_deg:.1f}°" for f in d.spec.field_fracs]
+        if isinstance(d, R.EngineDesign):
+            _, _, sp = _engine_model(d, max(self.analysis_config.currentIndex(), 0))
+            labels = [f"{x:g}°, {y:g}°" if x else f"{y:g}°" for x, y in sp.fields]
+        else:
+            labels = [f"{f * d.spec.half_field_deg:.1f}°" for f in d.spec.field_fracs]
         if [self.field_box.itemText(i) for i in range(self.field_box.count())] != labels:
             k = self.field_box.currentIndex()
             self.field_box.blockSignals(True)
@@ -640,7 +689,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sel = self.selected()
         if self.tabs.currentWidget() is not self.analysis_tab or not sel:
             return
-        key = (sel[0], self.field_box.currentIndex())
+        key = (sel[0], self.field_box.currentIndex(), max(self.analysis_config.currentIndex(), 0))
         if key == self._analysis_shown or key[1] < 0:
             return
         self._analysis_shown = key
@@ -648,7 +697,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.analyzer.request(key)
 
     def _on_analysis(self, key, res):
-        d, k = key
+        d, k, _ = key
         if key != self._analysis_shown:
             return  # a newer request is on its way
         fig = self.analysis_plot.figure
@@ -669,8 +718,14 @@ class MainWindow(QtWidgets.QMainWindow):
         out = []
         for d in sel:
             q = d.perf
+            if isinstance(d, R.EngineDesign):
+                head = (f"EFL {q['efl']:.3f} mm   EPD {d.spec.epd:g} mm   "
+                        f"{len(d.problem.configs)} configuration(s)   ")
+            else:
+                head = (f"EFL {q['efl']:.3f} mm   F/{d.spec.fnum:g}   "
+                        f"±{d.spec.half_field_deg:g}°   ")
             out += [f"{d.name}", "=" * len(d.name), d.note,
-                    f"EFL {q['efl']:.3f} mm   F/{d.spec.fnum:g}   ±{d.spec.half_field_deg:g}°   "
+                    head +
                     f"mean / max RMS WFE {q['mean_wfe']:.3f} / {q['max_wfe']:.3f} waves   "
                     f"mean spot {q['mean_spot_um']:.1f} µm   max distortion "
                     f"{100 * q['max_distortion']:.2f} %", "", d.prescription, "", ""]
@@ -731,6 +786,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if not snaps:
             return
         sn = snaps[min(i, len(snaps) - 1)]
+        if isinstance(sn, _EngineSnap):
+            d = sn.design
+            c = max(self.layout_config.currentIndex(), 0)
+            title = f"{d.name} · mean RMS WFE {d.perf.get('mean_wfe', float('nan')):.3f} waves"
+            if len(d.problem.configs) > 1:
+                title += f" · {self.layout_config.currentText()}"
+            self.renderer.request(View(None, None, d.spec, 1.0, title, engine=d, config=c))
+            return
         label = (self.snap_label.get(id(sn)) or getattr(sn, "label", None)
                  or name.replace("live: ", ""))
         self.renderer.request(_view(sn, self.path_spec[name], label))
@@ -748,11 +811,19 @@ class MainWindow(QtWidgets.QMainWindow):
             ax.text(0.5, 0.5, f"cannot trace this system:\n{geo}", ha="center", va="center",
                     color=P.MUTED, transform=ax.transAxes)
         else:
-            P.draw_layout(ax, view.params, view.layout, view.spec, view.beta,
-                          title=view.title, geometry=geo)
-            handles = [matplotlib.lines.Line2D([], [], color=P.SERIES[i], lw=1.5,
-                                               label=f"{f * view.spec.half_field_deg:.0f}°")
-                       for i, f in enumerate(view.spec.field_fracs)]
+            if view.engine is not None:
+                from ..engine.plots import draw_system
+
+                system, surfs, spec = _engine_model(view.engine, view.config)
+                draw_system(ax, surfs, system, spec, title=view.title, geometry=geo)
+                labels = [f"{np.hypot(*f):.0f}°" for f in spec.fields]
+            else:
+                P.draw_layout(ax, view.params, view.layout, view.spec, view.beta,
+                              title=view.title, geometry=geo)
+                labels = [f"{f * view.spec.half_field_deg:.0f}°" for f in view.spec.field_fracs]
+            handles = [matplotlib.lines.Line2D([], [], color=P.SERIES[i % len(P.SERIES)],
+                                               lw=1.5, label=lab)
+                       for i, lab in enumerate(labels)]
             handles += [matplotlib.lines.Line2D([], [], color=P.PHASE, lw=1.8,
                                                 ls=(0, (2, 1.5)), label="ideal phase"),
                         matplotlib.patches.Rectangle((0, 0), 1, 1, fc=P.GLASS, ec=P.GLASS_EDGE,
@@ -760,6 +831,236 @@ class MainWindow(QtWidgets.QMainWindow):
             ax.legend(handles=handles, loc="lower left", ncol=len(handles), frameon=False,
                       fontsize=7.5, labelcolor=P.INK)
         self.layout_plot.canvas.draw_idle()
+
+    # ------------------------------------------------------------------ configurations
+    def _sync_configs(self, d):
+        names = ([c.name or f"config {i + 1}" for i, c in enumerate(d.problem.configs)]
+                 if isinstance(d, R.EngineDesign) else [])
+        for box in (self.layout_config, self.analysis_config):
+            if [box.itemText(i) for i in range(box.count())] != names:
+                box.blockSignals(True)
+                box.clear()
+                box.addItems(names)
+                box.blockSignals(False)
+            box.setVisible(len(names) > 1)
+
+    def _config_changed(self, i):
+        for box in (self.layout_config, self.analysis_config):
+            if box.currentIndex() != i and i >= 0:
+                box.blockSignals(True)
+                box.setCurrentIndex(i)
+                box.blockSignals(False)
+        sel = self.selected()
+        if sel:
+            self._sync_fields(sel[0])
+        self._slider_changed(self.slider.value())
+        self._refresh_analysis()
+
+    # ------------------------------------------------------------------ design operations
+    def _engine_selected(self, convert=True):
+        sel = self.selected()
+        if not sel:
+            QtWidgets.QMessageBox.information(self, "NovaOptics", "Select a design first.")
+            return None
+        d = sel[0]
+        if not isinstance(d, R.EngineDesign):
+            if not convert:
+                return None
+            d = R.evaluate_engine(R.engine_from_design(d))
+            self.add_design(d, select=False)
+        return d
+
+    def edit_as_surfaces(self, d=None):
+        d = d or (self.selected() or [None])[0]
+        if d is None:
+            return
+        e = R.evaluate_engine(R.engine_from_design(d)) if not isinstance(d, R.EngineDesign) \
+            else d
+        if e is not d:
+            self.add_design(e)
+        self.tabs.setCurrentWidget(self.lensdata)
+
+    def _action(self, label, fn):
+        """Run fn() -> EngineDesign in the background; the result is added as a design."""
+        if self.running:
+            return
+        self.running = True
+        self.t_start = time.time()
+        self.busy.show()
+        self._update_enabled()
+        self.status.setText(f"{label}…")
+        self.log.appendPlainText(f"=== {label}, {time.strftime('%H:%M:%S')}")
+        b = self.bridge
+
+        def job():
+            progress.reset_cancel()
+            try:
+                import contextlib
+
+                with contextlib.redirect_stdout(R._Lines(b.log.emit)):
+                    out = fn()
+                for d in (out if isinstance(out, list) else [out]):
+                    R.evaluate_engine(d)
+                    b.design.emit(d)
+                b.finished.emit(None)
+            except progress.Cancelled:
+                b.finished.emit("cancelled")
+            except Exception:  # noqa: BLE001 - reported in the GUI
+                b.finished.emit(traceback.format_exc())
+
+        threading.Thread(target=job, daemon=True, name="novaoptics-action").start()
+
+    def _derived(self, d, prob, params, label, seconds):
+        return R.EngineDesign(f"{d.name} · {label}", prob, params, d.spec, seconds,
+                              f"{label} (from {d.name})", d.catalog, free=None)
+
+    def optimize_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            free = d.free or ED.variables(d.problem)
+            p, info = ED.optimize_design(d.problem, d.params, d.spec, free, iters=200)
+            print(f"cost {info['history'][0]:.4g} -> {info['cost']:.4g} in {info['iters']} "
+                  f"iterations")
+            e = self._derived(d, d.problem, p, "optimized", time.time() - t)
+            e.free = d.free
+            return e
+
+        self._action(f"optimizing {d.name}", fn)
+
+    def add_element_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            prob, p, res = ED.add_element(d.problem, d.params, d.spec, log=print)
+            return self._derived(d, prob, p, "+1 element", time.time() - t)
+
+        self._action(f"adding an element to {d.name} (every air space is tried)", fn)
+
+    def cement_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        S = d.problem.system.surfaces
+        rears = [i for i, s in enumerate(S) if i > 0 and s.interact == "refract"
+                 and S[i - 1].material not in ("air", "", "vacuum")
+                 and S[i - 1].interact == "refract"]
+        if not rears:
+            QtWidgets.QMessageBox.information(self, "NovaOptics", "No glass element found.")
+            return
+        items = [f"surface {i}: rear of {S[i - 1].label or 'element'} ({S[i - 1].material})"
+                 for i in rears]
+        item, ok = QtWidgets.QInputDialog.getItem(self, "Cement",
+                                                  "Cement a new glass behind:", items, 0, False)
+        if not ok:
+            return
+        rear = rears[items.index(item)]
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            prob, p = ED.cement(d.problem, d.params, d.spec, rear)
+            return self._derived(d, prob, p, f"cemented at surface {rear}", time.time() - t)
+
+        self._action(f"cementing a glass behind surface {rear} of {d.name}", fn)
+
+    def snap_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            prob, p = ED.snap_glasses(d.problem, d.params, d.spec)
+            return self._derived(d, prob, p, "catalog glasses", time.time() - t)
+
+        self._action(f"snapping the model glasses of {d.name}", fn)
+
+    def per_wavelength_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            prob, p = ED.per_wavelength_focus(d.problem, d.params, d.spec)
+            p, _ = ED.optimize_design(prob, p, d.spec,
+                                      ED.variables(prob, curvatures=False, thicknesses=False),
+                                      iters=100)
+            return self._derived(d, prob, p, "per-wavelength focus", time.time() - t)
+
+        self._action(f"one image plane per wavelength for {d.name}", fn)
+
+    def _lensdata_changed(self, d):
+        self.status.setText(f"Re-evaluating {d.name}…")
+
+        def job():
+            try:
+                R.evaluate_engine(d)
+                self.bridge.log.emit(f"lens data of {d.name} applied")
+            except Exception:  # noqa: BLE001
+                self.bridge.log.emit(traceback.format_exc())
+            self.bridge.refresh.emit(d)
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _refresh_design(self, d):
+        r = self.designs.index(d)
+        q = d.perf
+        vals = [d.name, f"{q['mean_wfe']:.3f}", f"{q['max_wfe']:.3f}", f"{q['mean_spot_um']:.1f}",
+                f"{100 * q['max_distortion']:.2f} %", f"{q['efl']:.3f}", f"{d.seconds:.0f}"]
+        for c, val in enumerate(vals):
+            self.table.item(r, c).setText(val)
+        self._analysis_shown = None
+        self._selection_changed()
+        self.status.setText(f"{d.name}: mean RMS WFE {q['mean_wfe']:.3f} waves")
+
+    def import_zmx(self, path=None):
+        if not path:
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Import Zemax lens", str(R.REPO), "Zemax lens (*.zmx);;All files (*)")
+        if not path:
+            return
+        try:
+            d = R.evaluate_engine(R.engine_from_zmx(path))
+        except Exception as e:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(self, "NovaOptics", f"Cannot import {path}:\n{e}")
+            return
+        self.add_design(d)
+        self.status.setText(f"Imported {path}")
+
+    def export_zmx(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        if len(d.problem.configs) > 1:
+            QtWidgets.QMessageBox.information(
+                self, "NovaOptics", "Multi-configuration export is not supported yet; the "
+                "first configuration is written.")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Zemax lens",
+                                                        "design.zmx", "Zemax lens (*.zmx)")
+        if not path:
+            return
+        from ..engine import zmx
+        from ..engine import merit as EM
+
+        try:
+            zmx.save(path, d.problem.system, EM.config_surfaces(d.params, d.problem, 0),
+                     EM.config_spec(d.spec, d.problem.configs[0]), d.name)
+        except Exception as e:  # noqa: BLE001
+            QtWidgets.QMessageBox.critical(self, "NovaOptics", f"Cannot export:\n{e}")
+            return
+        self.status.setText(f"Exported {path}")
 
     # ------------------------------------------------------------------ files
     def open_designs(self, path=None):
@@ -776,7 +1077,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QApplication.processEvents()
             for d in designs:
                 if not d.perf:
-                    R.evaluate(d)
+                    R.evaluate_engine(d) if isinstance(d, R.EngineDesign) else R.evaluate(d)
                 self.add_design(d, select=False)
         except Exception as e:  # noqa: BLE001
             QtWidgets.QMessageBox.critical(self, "NovaOptics", f"Cannot open {path}:\n{e}")
@@ -818,6 +1119,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 @dataclass(eq=False)
+class _EngineSnap:
+    """Layout-path entry of an engine design (drawn as a surface system)."""
+
+    design: object
+    label: str = ""
+    mean_wfe: float = float("nan")
+
+
+@dataclass(eq=False)
 class _FinalSnap:
     """Stand-in snapshot for a loaded design without a recorded path."""
 
@@ -844,10 +1154,18 @@ def draw_performance(fig, designs):
         q, col = d.perf, P.SERIES[j % len(P.SERIES)]
         a.plot(q["field_deg"], q["rms_wfe"], color=col, lw=2, label=d.name)
         b.plot(q["field_deg"], q["rms_spot_um"], color=col, lw=2)
-        c.plot(q["tangential"], q["curve_deg"], color=col, lw=2)
-        c.plot(q["sagittal"], q["curve_deg"], color=col, lw=2, ls="--")
+        if np.all(np.isfinite(q["tangential"])):
+            c.plot(q["tangential"], q["curve_deg"], color=col, lw=2)
+            c.plot(q["sagittal"], q["curve_deg"], color=col, lw=2, ls="--")
         nz = q["field_deg"] > 0  # distortion is undefined (0/0) on axis
         e.plot(100 * q["distortion"][nz], q["field_deg"][nz], color=col, lw=2)
+        for m, cq in enumerate(q.get("configs", [])[1:], start=1):  # further configurations
+            ls = [":", "-.", (0, (5, 2)), (0, (1, 1))][(m - 1) % 4]
+            a.plot(cq["field_deg"], cq["rms_wfe"], color=col, lw=1.5, ls=ls,
+                   label=f"{d.name}: {cq['name']}")
+            b.plot(cq["field_deg"], cq["rms_spot_um"], color=col, lw=1.5, ls=ls)
+            nz = cq["field_deg"] > 0
+            e.plot(100 * cq["distortion"][nz], cq["field_deg"][nz], color=col, lw=1.5, ls=ls)
     a.axhline(0.07, color=P.MUTED, lw=1, ls=":")
     a.text(0.2, 0.072, "Maréchal 0.07", fontsize=7.5, color=P.MUTED, va="bottom")
     a.set(xlabel="field angle [deg]", ylabel="RMS wavefront error [waves]")

@@ -102,21 +102,66 @@ def analysis_figure(fig, sp, o, p, m, title=""):
         fig.suptitle(title, fontsize=9, color=INK, x=0.01, ha="left")
 
 
-def draw_system(ax, params, system, spec, n_rays=7, title=None, sd=None, config=None,
-                problem=None):
+_GEOM: dict = {}
+
+
+def system_geometry(surfs, system, spec, n_rays=7, n_pts=61):
+    """Ray paths, clear semi-diameters and global surface curves (y-z) for drawing;
+    compiled once per (system, spec)."""
+    import jax
+    import jax.numpy as jnp
+
+    from .system import frames
+    from .trace import aim_chief, launch, sag, trace_ray
+
+    key = (system, spec, n_rays, n_pts)
+    if key not in _GEOM:
+        if len(_GEOM) > 16:
+            _GEOM.clear()
+        wl = spec.ref_wavelength
+        py = jnp.linspace(-1, 1, n_rays)
+        fields = jnp.asarray(spec.fields, float)
+
+        def geom(surfs):
+            fr = frames(surfs, system)
+
+            def per_field(f):
+                xy = aim_chief(surfs, system, f, wl)
+                one = lambda b: trace_ray(surfs, system, wl,
+                                          *launch(xy, f, 0.0, b, spec.epd, system), fr)
+                r = jax.vmap(one)(py)
+                return r["pts"], r["local"]
+
+            pts, loc = jax.vmap(per_field)(fields)
+            sd = jnp.sqrt(jnp.max(loc[..., 0] ** 2 + loc[..., 1] ** 2, axis=(0, 1))) * 1.02
+            curves = []
+            for i, s in enumerate(system.surfaces):
+                O, R = fr[i]
+                y = jnp.linspace(-1.0, 1.0, n_pts) * jnp.maximum(sd[i], 1e-3)
+                if s.shape == "cb":
+                    z = jnp.zeros_like(y)
+                else:
+                    z = jax.vmap(lambda yy: sag(s, surfs[i], 0.0, yy))(y)
+                curves.append(O[None, :] + jnp.stack([jnp.zeros_like(y), y, z], 1) @ R.T)
+            return pts, sd, jnp.stack(curves), fr[-1][0], fr[-1][1]
+
+        _GEOM[key] = jax.jit(geom)
+    out = _GEOM[key](surfs)
+    return tuple(np.asarray(a) for a in out)
+
+
+def draw_system(ax, params, system, spec, n_rays=7, title=None, config=None, problem=None,
+                geometry=None):
     """Meridional (y-z) drawing of an engine system: surfaces as sag curves placed with
     their coordinate frames, glass shaded between consecutive refracting surfaces,
     mirrors as thick lines, rays of every field at the reference wavelength.
 
     `params` is a list of surface dicts, or a design tree {"s", "mc"} with `problem`
-    and `config` (configuration index) to draw one configuration."""
-    import jax
-    import jax.numpy as jnp
+    and `config` (configuration index) to draw one configuration.  `geometry`: a
+    precomputed system_geometry() result (e.g. from a worker thread)."""
     from matplotlib.patches import Polygon
 
     from ..plot import GLASS, GLASS_EDGE, PHASE
-    from .system import frames
-    from .trace import aim_chief, launch, sag, trace_ray
 
     if isinstance(params, dict):
         from .merit import config_spec, config_surfaces
@@ -126,58 +171,35 @@ def draw_system(ax, params, system, spec, n_rays=7, title=None, sd=None, config=
         spec = config_spec(spec, problem.configs[c])
     else:
         surfs = params
-    fr = frames(surfs, system)
-    wl = spec.ref_wavelength
-    py = jnp.linspace(-1, 1, n_rays)
-    paths = []
-    for f in spec.fields:
-        xy = aim_chief(surfs, system, jnp.asarray(f, float), wl)
-        one = lambda b: trace_ray(surfs, system, wl, *launch(xy, f, 0.0, b, spec.epd, system),
-                                  fr)
-        r = jax.vmap(one)(py)
-        paths.append((np.asarray(r["pts"]), np.asarray(r["local"])))
-    if sd is None:
-        sd = np.max([np.sqrt(np.max(loc[..., 0] ** 2 + loc[..., 1] ** 2, axis=0))
-                     for _, loc in paths], axis=0) * 1.02
-    curves = []
-    for i, s in enumerate(system.surfaces):
-        O, R = (np.asarray(a) for a in fr[i])
-        if s.shape == "cb" or i == system.n - 1 and s.interact == "none":
-            curves.append(None)
-            continue
-        h = max(float(sd[i]), 1e-3)
-        y = np.linspace(-h, h, 61)
-        z = np.array([float(sag(s, surfs[i], 0.0, yy)) for yy in y])
-        pts = O[None, :] + np.stack([np.zeros_like(y), y, z], 1) @ R.T
-        curves.append(pts)
-    for j, (pts, _) in enumerate(paths):
-        for k in range(pts.shape[0]):
-            ax.plot(pts[k, :, 2], pts[k, :, 1], color=SERIES[j % len(SERIES)], lw=0.6,
+    pts, sd, curves, O_img, R_img = geometry or system_geometry(surfs, system, spec, n_rays)
+    for j in range(pts.shape[0]):
+        for k in range(pts.shape[1]):
+            ax.plot(pts[j, k, :, 2], pts[j, k, :, 1], color=SERIES[j % len(SERIES)], lw=0.6,
                     alpha=0.85)
     S = system.surfaces
+    drawn = [s.shape != "cb" and not (i == system.n - 1 and s.interact == "none")
+             for i, s in enumerate(S)]
     for i, s in enumerate(S):
-        if curves[i] is None:
+        if not drawn[i]:
             continue
+        c = curves[i]
         if s.interact == "refract" and s.material not in ("air", "", "vacuum"):
-            j = next((k for k in range(i + 1, len(S)) if curves[k] is not None
-                      and S[k].interact == "refract"), None)
+            j = next((k for k in range(i + 1, len(S)) if drawn[k] and S[k].interact == "refract"),
+                     None)
             if j is not None:
-                a, b = curves[i], curves[j]
-                poly = np.r_[a[:, [2, 1]], b[::-1][:, [2, 1]]]
+                poly = np.r_[c[:, [2, 1]], curves[j][::-1][:, [2, 1]]]
                 ax.add_patch(Polygon(poly, closed=True, fc=GLASS, ec=GLASS_EDGE, lw=0.8,
                                      zorder=0))
         if s.interact == "reflect":
-            ax.plot(curves[i][:, 2], curves[i][:, 1], color=GLASS_EDGE, lw=2.2)
+            ax.plot(c[:, 2], c[:, 1], color=GLASS_EDGE, lw=2.2)
         elif s.stop:
-            c = curves[i]
             ax.plot(c[[0, 0], 2], [c[0, 1] * 1.05, c[0, 1] * 1.6], color=INK, lw=1.5)
             ax.plot(c[[-1, -1], 2], [c[-1, 1] * 1.05, c[-1, 1] * 1.6], color=INK, lw=1.5)
         if s.phase and np.any(np.abs(np.asarray(surfs[i]["pcoef"])) > 1e-9):
-            ax.plot(curves[i][:, 2], curves[i][:, 1], color=PHASE, lw=1.8, ls=(0, (2, 1.5)))
-    O, R = (np.asarray(a) for a in fr[-1])
-    hi = np.max([np.abs(p[:, -1, 1]).max() for p, _ in paths]) * 1.15 + 1e-3
+            ax.plot(c[:, 2], c[:, 1], color=PHASE, lw=1.8, ls=(0, (2, 1.5)))
+    hi = np.max(np.abs(pts[:, :, -1, 1])) * 1.15 + 1e-3
     yy = np.array([-hi, hi])
-    ax.plot(O[2] + R[2, 1] * yy, O[1] + R[1, 1] * yy, color=INK, lw=1.0)
+    ax.plot(O_img[2] + R_img[2, 1] * yy, O_img[1] + R_img[1, 1] * yy, color=INK, lw=1.0)
     ax.set_aspect("equal")
     ax.axis("off")
     if title:
