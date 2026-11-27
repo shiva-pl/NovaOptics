@@ -658,7 +658,7 @@ def explore_architectures(p0, lay0, spec: Spec, patterns=PATTERNS, stop_index=1,
 def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0,
                       patterns=PATTERNS, top_k=2, aspheres=False, glass=None, morph_iters=30,
                       glass_pull=0.1, stop_shift=False, bending_hops=False, verbose=True,
-                      n_elem=None):
+                      n_elem=None, grow_spacings=None):
     """Full pipeline.  Returns (params, layout, recorder, info).
 
     glass: a catalog.GlassSpace of real catalog glasses.  Glasses stay continuous
@@ -671,6 +671,11 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
     n_elem: number of elements of the final design.  The architectures (`patterns`)
     start with len(pattern) screens; GROW splits screens in phase space up to n_elem
     (see grow.py) before the morph.
+    grow_spacings: minimum screen spacings tried while growing, each a separate variant
+    of every architecture, judged after materialization like the architectures are.
+    Default (2 gmin, tmin + 2 gmin): tight spacing suits some designs, room for glass
+    others, and phase space cannot tell which (with 5-6 elements the better choice
+    halved the error in some cases and doubled it in others).
     """
     rec0 = Recorder(spec, verbose=verbose, label="ideal")
     p0, lay0 = stage_ideal(spec, rec0)
@@ -678,17 +683,24 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
                                   verbose, aspheres, glass)
     if verbose:
         print("phase-space ranking:", ", ".join(f"{a['name']} {a['score']:.3f}" for a in archs))
-    def finish(a):
+    growing = bool(n_elem) and any(n_elem > a["layout"].n_elem for a in archs)
+    spacings = (tuple(grow_spacings) if grow_spacings is not None else
+                (2.0 * mech.gmin, mech.tmin + 2.0 * mech.gmin)) if growing else (None,)
+
+    def finish(item):
+        a, spacing = item
+        name = a["name"] if spacing is None or len(spacings) == 1 else \
+            f"{a['name']} @{spacing:g}mm"
         if verbose:
-            print(f"=== materializing architecture {a['name']}")
-        rec = a["rec"]
-        rec.snaps[:0] = rec0.snaps
+            print(f"=== materializing architecture {name}")
+        rec = Recorder(spec, verbose=verbose, label=name)
+        rec.snaps = list(rec0.snaps) + list(a["rec"].snaps)
         p, lay = a["params"], a["layout"]
-        if n_elem and n_elem > lay.n_elem:
+        if spacing is not None and n_elem > lay.n_elem:
             from .grow import stage_grow
 
             p, lay = stage_grow(p, lay, spec, rec, n_elem, mech=mech,
-                                virtual_petzval=virtual_petzval)
+                                virtual_petzval=virtual_petzval, spacing=spacing)
         p, lay = stage_materialize(p, lay, spec, rec, mech=mech,
                                    virtual_petzval=virtual_petzval, iters=morph_iters,
                                    glass_pull=glass_pull if glass is not None else 0.0)
@@ -697,9 +709,10 @@ def design_from_phase(spec: Spec, stop_index=1, mech=Mech(), virtual_petzval=1.0
         if stop_shift:
             p, lay = stage_stop_shift(p, lay, spec, rec, mech=mech)
         p, lay = stage_catalog(p, lay, spec, rec, mech=mech)
-        return (rec.snaps[-1].mean_wfe, a["name"], p, lay, rec)
+        return (rec.snaps[-1].mean_wfe, name, p, lay, rec)
 
-    finals = pmap(finish, archs[:top_k])  # architectures are independent
+    # architectures (and growth variants) are independent
+    finals = pmap(finish, [(a, sp) for a in archs[:top_k] for sp in spacings])
     finals.sort(key=lambda f: f[0] if np.isfinite(f[0]) else np.inf)
     score, name, p, lay, rec = finals[0]
     info = {"architectures": [(a["name"], a["score"]) for a in archs],
