@@ -449,7 +449,7 @@ def engine_from_json(row: dict) -> EngineDesign:
     from ..engine.system import Spec as ESpec
     from ..engine.system import Surface, System
 
-    S = tuple(Surface(**s) for s in row["surfaces"])
+    S = tuple(Surface(**{k: v for k, v in s.items() if k != "medium"}) for s in row["surfaces"])
     system = System(S, row.get("z_launch", -20.0))
     configs = tuple(EM.Config(**{k: _tuples(v) for k, v in c.items()}) for c in row["configs"])
     t = dict(row["targets"])
@@ -460,6 +460,13 @@ def engine_from_json(row: dict) -> EngineDesign:
     if region is not None:
         region = load_catalog(DEFAULT_AGF, spec)
     prob = EM.Problem(system, configs, EM.Targets(region=region, **t))
+    from ..engine.materials import disp
+
+    for s_, p_ in zip(S, row["params"]["s"]):  # files from before glasses were data
+        if s_.medium == "catalog" and "disp" not in p_:
+            p_["disp"] = disp(s_.material).tolist()
+        p_.setdefault("disp", [0.0] * 7)
+        p_.setdefault("a2", 0.0)
     params = {"s": [{k: jnp.asarray(v, float) for k, v in p.items()} for p in row["params"]["s"]],
               "mc": [{k: jnp.asarray(v, float) for k, v in m.items()} for m in row["params"]["mc"]]}
     return EngineDesign(row["design"], prob, params, spec, row.get("seconds", 0.0),

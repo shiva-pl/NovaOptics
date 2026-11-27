@@ -46,15 +46,23 @@ class Surface:
     n_terms: int = 0  # aspheric / Q coefficients
     r_norm: float = 10.0  # normalization radius for aspheres and phase [mm]
     interact: str = "refract"  # refract | reflect | none
-    material: str = "air"  # medium after the surface
+    # medium after the surface: "air", "model" or a catalog glass name.  The name does
+    # not take part in equality: catalog glasses are data (params["disp"]), so systems
+    # that differ only in their glasses share compiled programs; `medium` (air / model /
+    # catalog) does.
+    material: str = field(default="air", compare=False)
     phase: str = ""
     n_phase: int = 0
     order: int = 1  # diffraction order for diffractive / grating phase
     stop: bool = False
     cb_order: int = 0
-    label: str = ""
+    label: str = field(default="", compare=False)
+    medium: str = field(default="", init=False)
 
     def __post_init__(self):
+        from .materials import kind
+
+        object.__setattr__(self, "medium", kind(self.material))
         if self.shape not in SHAPES:
             raise ValueError(f"unknown shape {self.shape!r}")
         if self.phase not in PHASES:
@@ -112,6 +120,11 @@ def surface_params(s: Surface, **values):
     p = {k: 0.0 for k in KEYS}
     p.update(nd=1.5168, vd=64.17)
     p["coef"] = np.zeros(s.n_terms)
+    p["disp"] = np.zeros(7)
+    if s.medium == "catalog":
+        from .materials import disp
+
+        p["disp"] = disp(s.material)
     p["pcoef"] = np.zeros(s.n_phase)
     for k, v in values.items():
         if k not in p:

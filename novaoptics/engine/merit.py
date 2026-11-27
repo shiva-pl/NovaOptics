@@ -142,12 +142,16 @@ def _hinge(x):
     return jnp.maximum(x, 0.0)
 
 
-def evaluate_config(surfs, system: System, spec: Spec, targets: Targets):
-    """Wavefronts and ray data of one configuration: dict of arrays [F, W, P, ...]."""
+def evaluate_config(surfs, system: System, spec: Spec, targets: Targets, fields=None, wls=None,
+                    ref_wl=None):
+    """Wavefronts and ray data of one configuration: dict of arrays [F, W, P, ...].
+
+    fields / wls / ref_wl may be arrays (e.g. per-configuration data in a vmap); by
+    default they come from `spec`, which otherwise only supplies the entrance pupil."""
     px, py, wt = (jnp.asarray(a) for a in pupil_quadrature(targets.n_rings, targets.n_arms))
-    fields = jnp.asarray(spec.fields, float)
-    wls = jnp.asarray(spec.wavelengths, float)
-    ref = spec.ref_wavelength
+    fields = jnp.asarray(spec.fields, float) if fields is None else fields
+    wls = jnp.asarray(spec.wavelengths, float) if wls is None else wls
+    ref = spec.ref_wavelength if ref_wl is None else ref_wl
 
     def per_field(f):
         def per_wl(wl):
@@ -159,6 +163,18 @@ def evaluate_config(surfs, system: System, spec: Spec, targets: Targets):
     opd, img, ref_img, local, chief = jax.vmap(per_field)(fields)
     return {"opd": opd, "img": img, "ref_img": ref_img[:, 0], "local": local,
             "chief": chief, "wt": wt}
+
+
+def config_data(spec: Spec, conf: Config, targets: Targets):
+    """Per-configuration numbers as arrays (so configurations can be batched)."""
+    sp = config_spec(spec, conf)
+    efl_t = conf.efl if conf.efl is not None else targets.efl
+    fw = np.asarray(sp.fweights, float)
+    lw = np.asarray(sp.wl_weights, float)
+    return {"wls": np.asarray(sp.wavelengths, float), "lw": lw / lw.sum(),
+            "fields": np.asarray(sp.fields, float), "fw": fw / fw.sum(),
+            "efl": float(efl_t) if efl_t else 1.0, "use_efl": 1.0 if efl_t else 0.0,
+            "weight": float(conf.weight), "ref": float(sp.ref_wavelength)}, sp.iref
 
 
 def _runs(system: System):
@@ -199,35 +215,46 @@ def virtual_petzval(surfs, system: System, weight):
 
 
 def config_residuals(surfs, problem: Problem, spec: Spec, conf: Config, cfg):
+    data, iref = config_data(spec, conf, problem.targets)
+    data = {k: jnp.asarray(v) for k, v in data.items()}
+    return _config_residuals(surfs, problem, spec, data, iref, cfg, _any_efl(problem))
+
+
+def _any_efl(problem):
+    return any((c.efl if c.efl is not None else problem.targets.efl) for c in problem.configs)
+
+
+def _config_residuals(surfs, problem: Problem, spec: Spec, data, iref, cfg, any_efl):
+    """Residuals of one configuration; `data` holds its wavelengths, fields, weights and
+    focal-length target as arrays (see config_data)."""
     from .trace import sag
 
     system, targets = problem.system, problem.targets
     surfs = virtual_petzval(surfs, system, cfg["virtual_petzval"])
-    ev = evaluate_config(surfs, system, spec, targets)
-    F, W = len(spec.fields), len(spec.wavelengths)
-    fw = jnp.asarray(spec.fweights) / np.sum(spec.fweights)
-    lw = jnp.asarray(spec.wl_weights) / np.sum(spec.wl_weights)
-    wl_mm = jnp.asarray(spec.wavelengths)[None, :, None] * 1e-3
-    w = jnp.sqrt(conf.weight * fw[:, None, None] * lw[None, :, None] * ev["wt"][None, None, :])
+    ev = evaluate_config(surfs, system, spec, targets, data["fields"], data["wls"], data["ref"])
+    wl_mm = data["wls"][None, :, None] * 1e-3
+    w = jnp.sqrt(data["weight"] * data["fw"][:, None, None] * data["lw"][None, :, None]
+                 * ev["wt"][None, None, :])
     opd = ev["opd"] / wl_mm  # waves
     opd = opd - jnp.sum(opd * ev["wt"], -1, keepdims=True)  # piston
     r_wfe = (w * opd).ravel()
-    efl_t = conf.efl if conf.efl is not None else targets.efl
-    fno = (efl_t / spec.epd) if efl_t else 4.0
+    fno = jnp.where(data["use_efl"] > 0, data["efl"] / spec.epd, 4.0)
     scale = 8.0 * fno * wl_mm[..., None]
     eps = (ev["img"] - ev["ref_img"][:, None, None, :]) / scale
     r_spot = (jnp.sqrt(cfg["w_spot"] / 2.0) * w[..., None] * eps).ravel()
     out = [r_wfe, r_spot]
 
-    if efl_t:
-        efl = focal_length(surfs, system, spec)
-        out.append(jnp.atleast_1d(cfg["w_efl"] * (efl - efl_t) / efl_t))
+    if any_efl:  # (configurations without a target get zero residuals)
+        efl = focal_length(surfs, system, spec, wl_um=data["ref"])
+        efl_t = data["efl"]
+        out.append(jnp.atleast_1d(data["use_efl"] * cfg["w_efl"] * (efl - efl_t) / efl_t))
         if targets.max_distortion is not None:
-            th = jnp.deg2rad(jnp.linalg.norm(jnp.asarray(spec.fields, float), axis=-1))
-            h = jnp.linalg.norm(ev["chief"][:, spec.iref], axis=-1)
+            th = jnp.deg2rad(jnp.linalg.norm(data["fields"], axis=-1))
+            h = jnp.linalg.norm(ev["chief"][:, iref], axis=-1)
             ideal = efl * jnp.tan(th)
             d = jnp.where(ideal > 1e-9, (h - ideal) / jnp.where(ideal > 1e-9, ideal, 1.0), 0.0)
-            out.append(cfg["w_dist"] * _hinge(jnp.abs(d) - targets.max_distortion))
+            out.append(data["use_efl"] * cfg["w_dist"] *
+                       _hinge(jnp.abs(d) - targets.max_distortion))
 
     # mechanics: clear semi-diameters from all rays of this configuration
     sd = jnp.sqrt(jnp.max(jnp.sum(ev["local"][..., :2] ** 2, -1), axis=(0, 1, 2)) + 1e-12)
@@ -274,16 +301,55 @@ def config_residuals(surfs, problem: Problem, spec: Spec, conf: Config, cfg):
         if s.phase in ("ideal", "glass") and s.n_phase > 1:
             lam = spec.ref_wavelength * 1e-3
             out.append(jnp.sqrt(cfg["mu"]) * p["pcoef"][1:] / lam)
-    del F, W
     return jnp.concatenate([jnp.atleast_1d(o).ravel() for o in out])
 
 
+def _batch(problem: Problem, spec: Spec):
+    """Stacked per-configuration data if every configuration has the same structure
+    (same overrides, wavelength and field counts, reference index), else None."""
+    confs = problem.configs
+    if len(confs) < 2 or any(c.overrides != confs[0].overrides for c in confs):
+        return None
+    ds = [config_data(spec, c, problem.targets) for c in confs]
+    if len({(d["wls"].shape, d["fields"].shape, iref) for d, iref in ds}) != 1:
+        return None
+    data = {k: np.stack([d[k] for d, _ in ds]) for k in ds[0][0]}
+    return data, ds[0][1]
+
+
+def _batched(params, problem, spec, data, fn):
+    """vmap `fn(surfs, data_c)` over the configurations."""
+    over = problem.configs[0].overrides
+    ov = {key_name(i, k): jnp.stack([params["mc"][c][key_name(i, k)]
+                                     for c in range(len(problem.configs))]) for i, k in over}
+
+    def one(ov_c, data_c):
+        surfs = [dict(p) for p in params["s"]]
+        for i, k in over:
+            surfs[i][k] = ov_c[key_name(i, k)]
+        return fn(surfs, data_c)
+
+    return jax.vmap(one)(ov, {k: jnp.asarray(v) for k, v in data.items()})
+
+
 def residuals(params, problem: Problem, spec: Spec, cfg):
-    """Residual vector of all configurations (the `residual_fn` for optimize())."""
+    """Residual vector of all configurations (the `residual_fn` for optimize()).
+    Configurations of the same structure are evaluated as one batch (vmap), so the
+    compiled program does not grow with their number."""
+    b = _batch(problem, spec)
+    any_efl = _any_efl(problem)
+    if b is not None:
+        data, iref = b
+        R = _batched(params, problem, spec, data,
+                     lambda surfs, d: _config_residuals(surfs, problem, spec, d, iref, cfg,
+                                                        any_efl))
+        return R.ravel()
     out = []
     for c, conf in enumerate(problem.configs):
-        surfs = config_surfaces(params, problem, c)
-        out.append(config_residuals(surfs, problem, config_spec(spec, conf), conf, cfg))
+        data, iref = config_data(spec, conf, problem.targets)
+        data = {k: jnp.asarray(v) for k, v in data.items()}
+        out.append(_config_residuals(config_surfaces(params, problem, c), problem, spec, data,
+                                     iref, cfg, any_efl))
     return jnp.concatenate(out)
 
 
@@ -324,16 +390,26 @@ def rms_wfe(params, problem: Problem, spec: Spec, virtual_petzval_weight=0.0):
     return [np.asarray(a) for a in f(params)]
 
 
+def _rms_one(surfs, problem, spec, data, vp):
+    surfs = virtual_petzval(surfs, problem.system, vp)
+    ev = evaluate_config(surfs, problem.system, spec, problem.targets, data["fields"],
+                         data["wls"], data["ref"])
+    wl_mm = data["wls"][None, :, None] * 1e-3
+    opd = ev["opd"] / wl_mm
+    opd = opd - jnp.sum(opd * ev["wt"], -1, keepdims=True)
+    ms = jnp.sum(opd**2 * ev["wt"], -1)  # [F, W]
+    return jnp.sqrt(jnp.sum(ms * data["lw"][None, :], -1))
+
+
 def _rms_wfe(params, problem: Problem, spec: Spec, vp=0.0):
+    b = _batch(problem, spec)
+    if b is not None:
+        R = _batched(params, problem, spec, b[0],
+                     lambda surfs, d: _rms_one(surfs, problem, spec, d, vp))
+        return [R[c] for c in range(R.shape[0])]
     res = []
     for c, conf in enumerate(problem.configs):
-        sp = config_spec(spec, conf)
-        surfs = virtual_petzval(config_surfaces(params, problem, c), problem.system, vp)
-        ev = evaluate_config(surfs, problem.system, sp, problem.targets)
-        wl_mm = jnp.asarray(sp.wavelengths)[None, :, None] * 1e-3
-        opd = ev["opd"] / wl_mm
-        opd = opd - jnp.sum(opd * ev["wt"], -1, keepdims=True)
-        lw = jnp.asarray(sp.wl_weights) / np.sum(sp.wl_weights)
-        ms = jnp.sum(opd**2 * ev["wt"], -1)  # [F, W]
-        res.append(jnp.sqrt(jnp.sum(ms * lw[None, :], -1)))
+        data, _ = config_data(spec, conf, problem.targets)
+        data = {k: jnp.asarray(v) for k, v in data.items()}
+        res.append(_rms_one(config_surfaces(params, problem, c), problem, spec, data, vp))
     return res

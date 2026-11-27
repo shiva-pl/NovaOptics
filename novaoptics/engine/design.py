@@ -145,12 +145,15 @@ def insert_surfaces(problem: EM.Problem, params, at, surfaces, values):
 
 def replace_surface(problem, params, i, surface, **values):
     S = list(problem.system.surfaces)
+    old_s = S[i]
     S[i] = surface
     sp = [dict(p) for p in params["s"]]
     old = sp[i]
     new = surface_params(surface, **values)
+    keep_disp = surface.material == old_s.material
     for k in new:
-        if k not in values and k in old and np.shape(old[k]) == np.shape(new[k]):
+        if k not in values and k in old and np.shape(old[k]) == np.shape(new[k]) and \
+                (k != "disp" or keep_disp):
             new[k] = old[k]
     sp[i] = new
     prob = dataclasses.replace(problem, system=dataclasses.replace(problem.system,
@@ -188,7 +191,7 @@ def _morph(problem, params, spec, steps=20, iters=30, mu_b=1e-5, jump=1.5, polis
     rn = problem.system.surfaces[r].r_norm
     pr = params["s"][r]
     mat = problem.system.surfaces[f].material
-    nd = params["s"][f]["nd"] if mat == "model" else M.index(mat, M_LAMBDA_D)
+    nd = params["s"][f]["nd"] if mat == "model" else M.index(mat, M_LAMBDA_D, params["s"][f])
     z = {"s": params["s"], "mc": params["mc"],
          "m": {"phi": -2.0 * pr["pcoef"][0] / rn**2, "xi": jnp.asarray(0.0),
                "dc1": jnp.asarray(0.0), "dc2": jnp.asarray(0.0), "t": params["s"][f]["t"],

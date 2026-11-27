@@ -332,6 +332,10 @@ class LensDataEditor(QtWidgets.QWidget):
             p["t"] = jnp.asarray(float(txt[1] or 0.0))
             for k_, v_ in vals.items():
                 p[k_] = jnp.asarray(v_)
+            if s.medium == "catalog" and (src is None or base.material != material):
+                from ..engine.materials import disp
+
+                p["disp"] = jnp.asarray(disp(material))  # a new glass: its data
             S.append(s)
             P.append(p)
             fr = {}
