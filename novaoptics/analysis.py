@@ -15,6 +15,9 @@ from a single ray each.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -157,7 +160,9 @@ def clear_semi_diameters(ev, margin=1.02):
     return jnp.max(ev["heights"], axis=(0, 1, 2)) * margin
 
 
-_SUMMARY_JIT: dict = {}
+_SUMMARY_JIT: OrderedDict = OrderedDict()  # (layout, spec) -> compiled summary, LRU
+_SUMMARY_LOCK = threading.Lock()
+SUMMARY_CACHE = 8
 
 
 def _summary_core(params, beta, c_img, layout, spec):
@@ -169,12 +174,16 @@ def _summary_core(params, beta, c_img, layout, spec):
 def summary(params, layout: Layout, spec: Spec, beta=1.0, c_img=0.0):
     """EFL, per-field RMS wavefront error and spot, distortion (compiled per layout)."""
     key = (layout, spec)
-    if key not in _SUMMARY_JIT:
-        if len(_SUMMARY_JIT) > 32:
-            _SUMMARY_JIT.clear()
-        _SUMMARY_JIT[key] = jax.jit(lambda p, b, c: _summary_core(p, b, c, layout, spec))
-    efl, wfe, spot, dist = _SUMMARY_JIT[key](params, jnp.asarray(beta, float),
-                                             jnp.asarray(c_img, float))
+    with _SUMMARY_LOCK:
+        if key in _SUMMARY_JIT:
+            _SUMMARY_JIT.move_to_end(key)
+            fn = _SUMMARY_JIT[key]
+        else:
+            fn = jax.jit(lambda p, b, c: _summary_core(p, b, c, layout, spec))
+            _SUMMARY_JIT[key] = fn
+            while len(_SUMMARY_JIT) > SUMMARY_CACHE:
+                _SUMMARY_JIT.popitem(last=False)
+    efl, wfe, spot, dist = fn(params, jnp.asarray(beta, float), jnp.asarray(c_img, float))
     return {
         "efl": float(efl),
         "rms_wfe": np.asarray(wfe),

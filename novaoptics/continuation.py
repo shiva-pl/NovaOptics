@@ -223,7 +223,7 @@ def morph_to_params(z, cfg, layout: Layout):
 
 def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters=30,
                       mech=Mech(), virtual_petzval=1.0, mu_b=1e-5, polish_iters=80,
-                      glass_pull=0.0, xi0=None):
+                      glass_pull=0.0, xi0=None, jump=1.5):
     """Morph phase into glass (see `morph_to_params`).
 
     xi0: initial bending variable per element (shape factor X = 4 tanh(xi)); default 0,
@@ -248,7 +248,8 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
         "dc2": jnp.zeros(n),
     }
     free = {k: True for k in z}
-    for k, s in enumerate(np.linspace(0.0, 1.0, steps + 1)[1:], start=1):
+
+    def step(z, s):
         # The penalty acts on the *effective* aspheric phase (1-s)*b; dividing by
         # (1-s)^2 keeps b itself bounded so it cannot blow up as s -> 1, and the
         # factor s lets it start at zero so the first steps are gentle.
@@ -259,13 +260,34 @@ def stage_materialize(p, lay: Layout, spec: Spec, rec: Recorder, steps=20, iters
         cfg = make_cfg(**cfg_kw)
         z, _ = optimize(z, lay, spec, cfg, free, iters=iters, transform=morph_to_params)
         p = morph_to_params(z, cfg, lay)
+        c_img = virtual_petzval * float(virtual_petzval_curvature(p, lay))
+        wfe = A.summary(p, lay, spec, 1.0, c_img=c_img)["mean_wfe"]
+        return z, p, cfg_kw, wfe
+
+    # Adaptive homotopy steps: a step whose image quality jumps (mean RMS WFE above
+    # `jump` x the previous step's + 0.02 waves) is rejected and halved, down to 1/8 of
+    # the base step.  Systems with many elements need this: with a fixed step the morph
+    # of a 6-element design jumped between basins (2.1 waves at the end of the morph vs.
+    # 0.43 with 3x more steps).  Smooth paths are unchanged.
+    ds0 = 1.0 / steps
+    s_prev, ds, k, wfe_prev = 0.0, ds0, 0, None
+    while s_prev < 1.0 - 1e-12:
+        s = min(1.0, s_prev + ds)
+        z_new, p, cfg_kw, wfe = step(z, s)
+        bad = not np.isfinite(wfe) or (wfe_prev is not None and wfe > jump * wfe_prev + 0.02)
+        if bad and ds > ds0 / 8 + 1e-12:
+            ds /= 2
+            continue
+        z, s_prev, k = z_new, s, k + 1
         powers = " ".join(f"{float(v) * 1e3:+6.1f}" for v in z["phi"])
         rec.add("materialize", k, p, lay, 1.0, f"s={s:.2f}  powers[1/m] {powers}",
                 virtual_petzval, extra={"z": dict(z), "cfg": cfg_kw, "iters": iters})
+        wfe_prev = wfe
+        ds = min(ds0, 2.0 * ds)  # back toward the base step after a subdivision
     # polish as a plain glass system with independent curvatures
     free = {k: True for k in _glass_vars(lay)}
     p, _ = optimize(p, lay, spec, mech.cfg(), free, iters=polish_iters)
-    rec.add("materialize", steps + 1, p, lay, 1.0,
+    rec.add("materialize", k + 1, p, lay, 1.0,
             f"all-glass polish  glasses {_glasses(p, lay)}")
     return p, lay
 

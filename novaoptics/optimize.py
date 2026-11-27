@@ -74,10 +74,9 @@ STATS = Stats()
 
 
 def clear_compiled():
-    """Drop all compiled merit functions (ours and JAX's own caches)."""
-    with _LOCK:
-        _CACHE.clear()
-    jax.clear_caches()
+    """Drop all compiled programs (merit, summaries, drawing, JAX's own caches) and return
+    the memory to the operating system.  Useful between unrelated designs."""
+    release_memory(everything=True)
 
 
 def free_mask(params, free: dict):
@@ -106,16 +105,41 @@ def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
         return _compiled_locked(key, layout, spec, unravel, idx_key, transform)
 
 
-def _map_limit():
+def _read_int(path):
     try:
-        with open("/proc/sys/vm/max_map_count") as f:
-            return int(f.read())
+        with open(path) as f:
+            v = f.read().strip()
+        return None if v == "max" else int(v)
     except (OSError, ValueError):
         return None
 
 
-_MAP_LIMIT = _map_limit()
-MAP_BUDGET = 0.55  # fraction of vm.max_map_count the process may use before evicting
+def _mem_limit():
+    """Bytes this process may use: the cgroup limit if there is one, else physical RAM."""
+    total = None
+    try:
+        with open("/proc/meminfo") as f:
+            total = int(f.readline().split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    cg = [_read_int("/sys/fs/cgroup/memory.max"),
+          _read_int("/sys/fs/cgroup/memory/memory.limit_in_bytes")]
+    vals = [v for v in [total, *cg] if v and v < 1 << 60]
+    return min(vals) if vals else None
+
+
+_MAP_LIMIT = _read_int("/proc/sys/vm/max_map_count")
+_MEM_LIMIT = _mem_limit()
+# Fractions of vm.max_map_count and of the memory limit that compiled programs may push
+# the process to before least recently used programs are evicted.
+MAP_BUDGET = 0.55
+MEM_BUDGET = 0.5
+_CLEARABLE: list = []  # other caches of compiled programs (summary, drawing geometry)
+
+
+def register_cache(clear):
+    """Register a function that empties a cache of compiled programs."""
+    _CLEARABLE.append(clear)
 
 
 def _map_count():
@@ -126,28 +150,80 @@ def _map_count():
         return 0
 
 
-def _evict_for_maps():
-    """Every compiled XLA CPU program holds thousands of memory mappings (about 2700 for
-    a 3-element residual + Jacobian pair, more for larger systems).  Linux caps them per
-    process (vm.max_map_count, 65530 by default), and exceeding the cap aborts inside
-    LLVM.  Evict least recently used programs while the process is above budget."""
-    if not _MAP_LIMIT:
+def _rss():
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def memory_pressure():
+    """True when compiled programs should be released before compiling more.
+
+    Every compiled XLA CPU program holds memory and thousands of memory mappings (about
+    2700 for a 3-element residual + Jacobian pair, twice that for 6 elements).  Linux caps
+    mappings per process (vm.max_map_count, 65530 by default; exceeding it aborts inside
+    LLVM), and a 6-element study otherwise grows past 14 GB."""
+    if _MAP_LIMIT and _map_count() > MAP_BUDGET * _MAP_LIMIT:
+        return True
+    return bool(_MEM_LIMIT) and _rss() > MEM_BUDGET * _MEM_LIMIT
+
+
+def _trim():
+    """Return freed heap memory to the operating system (glibc)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
+def _register_defaults():
+    if _CLEARABLE:
         return
-    budget = MAP_BUDGET * _MAP_LIMIT
-    if _map_count() < budget:
-        return
+    from . import analysis, plot
+
+    register_cache(analysis._SUMMARY_JIT.clear)
+    register_cache(plot._GEOM_JIT.clear)
+
+
+def release_memory(everything=False):
+    """Drop compiled programs: least recently used optimizer programs while under memory
+    pressure (all of them with everything=True), then, if still needed, the other
+    registered caches and JAX's own caches."""
     import gc
 
-    while len(_CACHE) > 1 and _map_count() >= budget:
-        _CACHE.popitem(last=False)
+    _register_defaults()
+    with _LOCK:
+        while _CACHE and (everything or (len(_CACHE) > 1 and memory_pressure())):
+            _CACHE.popitem(last=False)
+            gc.collect()
+    if everything or memory_pressure():
+        for clear in _CLEARABLE:
+            clear()
+        jax.clear_caches()
         gc.collect()
+    _trim()
 
 
 def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
     if key in _CACHE:
         _CACHE.move_to_end(key)
     else:
-        _evict_for_maps()
+        if memory_pressure():
+            import gc
+
+            while len(_CACHE) > 1 and memory_pressure():
+                _CACHE.popitem(last=False)
+                gc.collect()
+            if memory_pressure():
+                _register_defaults()
+                for clear in _CLEARABLE:
+                    clear()
+                gc.collect()
+            _trim()
         idx = jnp.asarray(idx_key)
 
         def res(x, full, cfg):

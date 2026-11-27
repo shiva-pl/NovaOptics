@@ -27,6 +27,7 @@ from novaoptics import analysis as A  # noqa: E402
 from novaoptics import continuation as C  # noqa: E402
 from novaoptics import plot as P  # noqa: E402
 from novaoptics.gui.runner import load_catalog  # noqa: E402
+from novaoptics.optimize import clear_compiled  # noqa: E402
 from novaoptics.system import Spec, describe, layout_dict, to_numpy  # noqa: E402
 
 OUT = Path(__file__).parent / "output" / "multilens"
@@ -60,6 +61,7 @@ def main(quick=False):
                                   "max_distortion": spec.max_distortion,
                                   "max_track": spec.max_track},
                          "params": {k: v.tolist() for k, v in to_numpy(p).items()}})
+            clear_compiled()  # programs for other element counts are not reused
             print(f"{name}: mean {rep['mean_wfe']:.3f} max {rep['max_wfe']:.3f} waves "
                   f"(from {info['chosen']}; {time.time() - t:.0f} s)", flush=True)
             (OUT / "results.json").write_text(json.dumps(rows, indent=1))
