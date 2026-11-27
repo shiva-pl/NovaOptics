@@ -93,13 +93,15 @@ def split_element(p, lay: Layout, i, delta):
 
 
 def stage_grow(p, lay: Layout, spec: Spec, rec: C.Recorder, n_target, mech=C.Mech(),
-               virtual_petzval=1.0, iters=80, mu_sphere=0.0):
+               virtual_petzval=1.0, iters=80, mu_sphere=0.0, spacing=None):
     """Split screens (phase space, beta = 1) until the design has `n_target` elements.
 
+    spacing: minimum distance between screens while growing [mm]; default 2 * gmin, the
+    rule of DISTRIBUTE / COLOR.
     mu_sphere > 0 adds the morph's penalty on aspheric phase to the split criterion,
     favouring splits that make the screens easier to realize with spherical glass.
     """
-    gmin = 2.0 * mech.gmin  # phase-space spacing rule, as in DISTRIBUTE / COLOR
+    gmin = 2.0 * mech.gmin if spacing is None else spacing
     cfg = make_cfg(beta=1.0, gmin=gmin, virtual_petzval=virtual_petzval, mu=mu_sphere)
     free = {"phase": True, "gaps": True, "bfd": True, **{v: True for v in C._gvars(lay)}}
     while lay.n_elem < n_target:
