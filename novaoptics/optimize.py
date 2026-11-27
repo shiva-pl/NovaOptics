@@ -106,10 +106,48 @@ def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
         return _compiled_locked(key, layout, spec, unravel, idx_key, transform)
 
 
+def _map_limit():
+    try:
+        with open("/proc/sys/vm/max_map_count") as f:
+            return int(f.read())
+    except (OSError, ValueError):
+        return None
+
+
+_MAP_LIMIT = _map_limit()
+MAP_BUDGET = 0.55  # fraction of vm.max_map_count the process may use before evicting
+
+
+def _map_count():
+    try:
+        with open("/proc/self/maps") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def _evict_for_maps():
+    """Every compiled XLA CPU program holds thousands of memory mappings (about 2700 for
+    a 3-element residual + Jacobian pair, more for larger systems).  Linux caps them per
+    process (vm.max_map_count, 65530 by default), and exceeding the cap aborts inside
+    LLVM.  Evict least recently used programs while the process is above budget."""
+    if not _MAP_LIMIT:
+        return
+    budget = MAP_BUDGET * _MAP_LIMIT
+    if _map_count() < budget:
+        return
+    import gc
+
+    while len(_CACHE) > 1 and _map_count() >= budget:
+        _CACHE.popitem(last=False)
+        gc.collect()
+
+
 def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
     if key in _CACHE:
         _CACHE.move_to_end(key)
     else:
+        _evict_for_maps()
         idx = jnp.asarray(idx_key)
 
         def res(x, full, cfg):
