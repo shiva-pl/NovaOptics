@@ -452,6 +452,67 @@ or start from 4- and 5-screen power patterns.
 
 ![error vs element count](examples/output/multilens/performance.png)
 
+## Native components: continuing, cementing, importing
+
+Every design is a sequence of **components**: lens (singlet or cemented group), phase
+screen, mirror, stop, coordinate break, dummy, image. Phase screens are *ideal*
+(achromatic), *glass* (disperses like the glass it sits on, as in the
+phase-to-glass morph), *diffractive* (OPD proportional to the wavelength) or a linear
+*grating* (lines/mm, order; wavelength dependent). Surface-by-surface data (the lens
+data editor, a Zemax file) is grouped into components automatically
+(`engine/components.py`); the surface engine underneath only traces them. Pipeline
+designs convert exactly, including residual phase.
+
+The design model on top (`engine/merit.py`, `engine/design.py`) has its own merit
+(the element model's, plus air spaces around a stop, edge thickness of cemented
+groups, virtual Petzval for phase screens) and **multi-configuration**: a
+configuration overrides any surface parameters with its own variables and may have
+its own wavelengths, fields and focal-length target. The phase-first operations
+work on components, and every structural change starts exactly continuous:
+
+* **add an element** (`add_element`): a zero-power phase screen on a zero-thickness
+  slab of model glass is inserted into every air space (and in front). The screen
+  disperses like its slab, whose glass is free, so color is corrected in phase space
+  as in the pipeline's COLOR stage. Each candidate is optimized, morphed into glass
+  (adaptive steps), polished and snapped to the catalog; the best real merit wins.
+  The phase-space merit did not predict the best position here either.
+* **cement** (`cement`): a zero-thickness layer of a new glass, conformal with the
+  element's rear surface, is inserted and grown (its minimum thickness ramped in).
+  The glass is chosen discretely from eight preferred glasses spread over the glass
+  map (k-means). A continuous model glass ran to unphysical (n_d, V_d), or stalled at
+  the edge of the glass map.
+* **materialize** a phase screen into a lens (also a bare imported screen, e.g. a
+  Zemax paraxial surface), and **dematerialize** a singlet into a screen. The screen
+  keeps the lens' paraxial matrix exactly (power and principal planes: a thin screen
+  with spaces a = (1 − D)/φ and b = (1 − A)/φ has the lens' [[A, B], [C, D]]), and it
+  disperses like the lens' glass. Its aspheric phase is fitted to the lens' ray
+  deviations. Beyond first order a thin screen cannot stand in for a thick lens in a
+  tightly balanced design (the triplet's rear element: 0.30 → 4.3 waves as a
+  screen), but materializing it again returns 0.295: it is a phase-space starting
+  point for re-shaping one element, not a lossless swap.
+
+`examples/continue_design.py` continues the 3-element all-spherical phase-first
+design (dense 21-field grid, preferred SCHOTT glasses):
+
+| design | mean RMS WFE [waves] | max RMS WFE [waves] |
+|---|---|---|
+| 3 elements (start) | 0.281 | 0.372 |
+| + 1 air-spaced element (best: in the back focal space) | **0.178** | **0.235** |
+| cemented (flint F2G12 behind the first element) | 0.227 | 0.280 |
+
+Cementing the thin middle negative only made it worse (≥ 0.42): it can only get
+thicker.
+
+![continued designs](examples/output/continue/layouts.png)
+
+**Zemax files** (`engine/zmx.py`, *File → Import / Export .zmx*): UTF-16 or UTF-8,
+lens units, ENPD or FNUM, wavelengths, angle fields; STANDARD, EVENASPH, COORDBRK,
+DGRATING (as a grating screen), PARAXIAL (as an ideal screen); catalog, model and
+MIRROR glasses. Unsupported content (other surface types, a finite object distance,
+other field types, multi-configuration data) is refused with a message naming it.
+The multi-configuration (MCE) records are not read yet. Tilt signs follow the engine's
+right-handed convention; check fold mirrors of imported files.
+
 ## Performance
 
 Profiling one architecture path of the aspheric pipeline (236 s originally) showed
@@ -567,10 +628,13 @@ novaoptics/
   plot.py          layouts, film strips, merit trajectory, performance plots
   progress.py      snapshot listeners and cooperative cancel (for front ends)
   gui/runner.py    Qt-free run options, jobs, evaluation, JSON save/load
-  gui/app.py       PySide6 main window
+  gui/app.py       PySide6 main window; gui/lensdata.py lens data / configuration editor
   engine/          general sequential surface engine: system.py (surfaces, frames),
                    trace.py, qpoly.py (Forbes Q), materials.py, analysis.py (spot,
-                   OPD, PSF, MTF), plots.py, convert.py
+                   OPD, PSF, MTF, field curves), plots.py, convert.py,
+                   components.py (native components), merit.py (merit, multi-
+                   configuration), design.py (add element, cement, materialize,
+                   dematerialize, glass snap, per-wavelength focus), zmx.py
 examples/design_triplet.py   runs everything, writes examples/output/
 examples/diagnose.py         diagnostics report and figures
 tests/                       physics and gradient checks
@@ -590,6 +654,8 @@ pytest
 python examples/design_triplet.py          # ~5 min on 4 CPU cores (3 min with a warm cache)
 python examples/design_triplet.py --quick  # smoke test
 python examples/design_multilens.py        # 3-6 elements, F/4 and F/2.8: ~40 min
+python examples/continue_design.py         # +1 element, cementing: ~25 min
+python examples/multiconfig.py             # zoom, spectrum from defocus
 ```
 
 ## Limitations and next steps
