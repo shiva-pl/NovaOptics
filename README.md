@@ -397,6 +397,61 @@ improve the final designs (0.106 / 0.161 aspheric and 0.307 / 0.394 spherical, v
 off-by-default option (`bending_hops=True`): insurance against a bad basin, not a gain
 when the morph already did well.
 
+## Multi-element designs: growing lenses from phase
+
+`design_from_phase(..., n_elem=N)` grows the 3-screen architectures to N elements in
+phase space before the morph (stage GROW, `grow.py`):
+
+* **Split.** A screen becomes two screens, each with half the aspheric phase, placed
+  symmetrically about the original position, a distance d apart. Each half gets the
+  power φ′ that solves 2φ′ − dφ′² = φ, so the pair has the original power and its
+  principal planes stay within O(d²φ) of the original screen: EFL and image position
+  are preserved, and a screen in the stop plane ends up straddling the stop. A glass
+  element cannot be split this way, because two thick lenses are not one lens.
+* **Which screen.** Every candidate split is re-optimized in phase space concurrently
+  and the best is kept, greedily, until N elements. For the first split this ranking
+  predicts the glass result: materializing all three 3→4 candidates gave the same
+  order at F/4 and at F/2.8. By 5 screens the phase merit is nearly perfect and stops
+  ranking realizability. At 5→6 the best final design came from the split with the
+  worst phase cost, and no phase-space proxy tested (aspheric phase content,
+  thin-lens φ³h⁴ spherical, an asphericity penalty) predicted it.
+* **Room for glass.** Splits pack screens 2 mm apart, which suits some designs and
+  leaves no room for real lenses in others. Each architecture is therefore grown at
+  two spacings, 2 mm and 4 mm (thickness + clearance), and all variants are materialized
+  and judged by the real merit, like the architectures.
+
+Growing more elements also needed two engineering fixes. The morph now uses
+**adaptive homotopy steps**: a step whose image quality jumps is halved. A
+6-element morph with fixed steps ended at 2.1 waves, and at 0.43 adaptively; the
+3-element example designs are unchanged. **Compiled programs are bounded by memory
+mappings and RSS.** Each XLA program holds thousands of mappings, and Linux caps them
+per process; a 6-element study had aborted inside LLVM, and later reached 14 GB.
+
+Results (`examples/design_multilens.py`, f = 50 mm, ±20°, F/d/C, all-spherical,
+preferred SCHOTT glasses, dense 21-field grid, all four architectures):
+
+| design | from | mean RMS WFE [waves] | max RMS WFE [waves] | mean RMS spot [µm] | time |
+|---|---|---|---|---|---|
+| F/4, 3 elements | `+−+` | 0.286 | 0.405 | 6.0 | 60 s |
+| F/4, 4 elements | `+−+` @2 mm | 0.183 | 0.233 | 4.3 | 154 s |
+| F/4, 5 elements | `+−+` @2 mm | **0.137** | 0.230 | 3.6 | 309 s |
+| F/4, 6 elements | `+−+` @4 mm | 0.192 | 0.249 | 4.0 | 618 s |
+| F/2.8, 3 elements | `+++` | 0.781 | 1.028 | 11.0 | 47 s |
+| F/2.8, 4 elements | `++−` @4 mm | 0.497 | 0.651 | 8.5 | 157 s |
+| F/2.8, 5 elements | `+−+` @4 mm | 0.432 | 0.540 | 7.4 | 314 s |
+| F/2.8, 6 elements | `++−` @4 mm | **0.407** | 0.545 | 7.5 | 649 s |
+
+Growing roughly halves the error from 3 to 5 elements at both apertures. The curve is
+not yet monotone: the 6-element F/4 design is worse than the 5-element one, although
+the 6-element space contains something close to it. Greedy growth commits to one
+split per step, and beyond the first split phase space cannot say which one glass
+will like. Next steps: materialize several split candidates at the last step (costly),
+or start from 4- and 5-screen power patterns.
+
+![grown designs](examples/output/multilens/layouts.png)
+
+![error vs element count](examples/output/multilens/performance.png)
+
 ## Performance
 
 Profiling one architecture path of the aspheric pipeline (236 s originally) showed
@@ -500,6 +555,7 @@ novaoptics/
   catalog.py       AGF reader, PCA glass space, normal-glass regression
   stopshift.py     stop-shift relations, stop-position scan, relayout
   bending.py       element re-bending (for bending hops)
+  grow.py          first-order-preserving screen splits, GROW stage
   system.py        Layout / Spec / parameter pytree, prescription printout
   trace.py         differentiable ray tracer: sphere + asphere + phase interface
   analysis.py      wavefront error, spot, EFL, distortion, AD field curves
@@ -533,6 +589,7 @@ pip install -e ".[dev]"
 pytest
 python examples/design_triplet.py          # ~5 min on 4 CPU cores (3 min with a warm cache)
 python examples/design_triplet.py --quick  # smoke test
+python examples/design_multilens.py        # 3-6 elements, F/4 and F/2.8: ~40 min
 ```
 
 ## Limitations and next steps
