@@ -505,6 +505,34 @@ thicker.
 
 ![continued designs](examples/output/continue/layouts.png)
 
+**Multi-configuration** (`examples/multiconfig.py`, about 4 min). Each configuration is
+a set of surface-parameter overrides (its own variables, or fixed values), plus
+optional own wavelengths, fields and focal-length target. Configurations of the same
+structure are evaluated as one batch, so the compiled program does not grow with their
+number (Jacobian compile 26 / 33 / 38 s for 1 / 3 / 5 configurations, instead of about
++29 s each). Catalog glasses are data, so every glass combination a snap tries shares
+one program.
+
+* *Zoom*, three model-glass singlets (+ − +), with both spacings per configuration
+  and a shared back focus: all focal lengths are met (35.00 / 50.00 / 69.99 mm), but
+  three singlets correct a 2× zoom poorly (0.4–1.6 waves). This demonstrates the
+  mechanics, not a zoom design.
+* *Spectrum from defocus*: a cemented doublet with intentional axial color. Each
+  wavelength from 450 to 850 nm is its own configuration, evaluated alone in its own
+  image plane. The planes are prescribed, 0.4 mm per 100 nm, and the lens is
+  optimized to put every wavelength on its plane:
+
+| wavelength | 450 nm | 550 nm | 650 nm | 750 nm | 850 nm |
+|---|---|---|---|---|---|
+| image plane [mm] | 47.2 | 47.6 | 48.0 | 48.4 | 48.8 |
+| RMS WFE on axis / 2° [waves] | 0.06 / 0.12 | 0.17 / 0.14 | 0.13 / 0.10 | 0.01 / 0.04 | 0.12 / 0.15 |
+
+  `per_wavelength_focus` sets this up from any design (*Design → Per-wavelength
+  focus*), with the planes free. Fixing them, or constraining their spacing, makes
+  axial color a design target.
+
+![spectrum from defocus](examples/output/multiconfig/spectral.png)
+
 **Zemax files** (`engine/zmx.py`, *File → Import / Export .zmx*): UTF-16 or UTF-8,
 lens units, ENPD or FNUM, wavelengths, angle fields; STANDARD, EVENASPH, COORDBRK,
 DGRATING (as a grating screen), PARAXIAL (as an ideal screen); catalog, model and

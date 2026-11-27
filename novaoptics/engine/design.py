@@ -387,10 +387,11 @@ def nearest_glasses(nd, vd, k=3):
     return [cat[j][0] for j in np.argsort(d)[:k]]
 
 
-def snap_glasses(problem: EM.Problem, params, spec: Spec, k=3, iters=60):
+def snap_glasses(problem: EM.Problem, params, spec: Spec, k=3, iters=60, free=None):
     """Replace every model glass by a catalog glass: the `k` nearest preferred glasses
     per surface in the (n_d/0.1, V_d/10) glass map, every combination (up to 27, else
-    nearest plus one alternative at a time) re-optimized; the best merit wins."""
+    nearest plus one alternative at a time) re-optimized over `free` (default: the
+    usual variables, without the glasses); the best merit wins."""
     S = problem.system.surfaces
     model = [i for i, s in enumerate(S) if s.material == "model"]
     if not model:
@@ -407,7 +408,11 @@ def snap_glasses(problem: EM.Problem, params, spec: Spec, k=3, iters=60):
         prob, p = problem, params
         for i, name in zip(model, combo):
             prob, p = replace_surface(prob, p, i, dataclasses.replace(S[i], material=name))
-        p, info = optimize_design(prob, p, spec, iters=iters)
+        fr = free
+        if fr is not None:  # the snapped glasses are no longer variables
+            fr = dict(fr, s=[{k: v for k, v in f.items() if k not in ("nd", "vd")}
+                             for f in fr["s"]])
+        p, info = optimize_design(prob, p, spec, fr, iters=iters)
         c = info.get("cost", np.inf)
         return (c if np.isfinite(c) else np.inf), prob, p
 

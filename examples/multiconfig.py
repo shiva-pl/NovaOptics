@@ -84,7 +84,7 @@ def spectral():
     free = D.variables(prob, configs=False)  # lens free, image planes fixed
     free["s"][3] = {"c": True}  # the space to the image is set per configuration
     P, _ = D.optimize_design(prob, P, spec, free, iters=300)
-    prob, P = D.snap_glasses(prob, P, spec)
+    prob, P = D.snap_glasses(prob, P, spec, free=free)  # the planes stay prescribed
     return "spectrum from defocus", prob, P, spec
 
 
