@@ -475,7 +475,9 @@ work on components, and every structural change starts exactly continuous:
   disperses like its slab, whose glass is free, so color is corrected in phase space
   as in the pipeline's COLOR stage. Each candidate is optimized, morphed into glass
   (adaptive steps), polished and snapped to the catalog; the best real merit wins.
-  The phase-space merit did not predict the best position here either.
+  Every position is tried with two phase-stage variants: an achromatic screen on the
+  flat image, and a dispersing screen with virtual Petzval. Neither was better
+  everywhere, and the phase-space merit did not predict the best position.
 * **cement** (`cement`): a zero-thickness layer of a new glass, conformal with the
   element's rear surface, is inserted and grown (its minimum thickness ramped in).
   The glass is chosen discretely from eight preferred glasses spread over the glass
@@ -497,7 +499,7 @@ design (dense 21-field grid, preferred SCHOTT glasses):
 | design | mean RMS WFE [waves] | max RMS WFE [waves] |
 |---|---|---|
 | 3 elements (start) | 0.281 | 0.372 |
-| + 1 air-spaced element (best: in the back focal space) | **0.178** | **0.235** |
+| + 1 air-spaced element (best: in the back focal space) | **0.187** | **0.243** |
 | cemented (flint F2G12 behind the first element) | 0.227 | 0.280 |
 
 Cementing the thin middle negative only made it worse (≥ 0.42): it can only get

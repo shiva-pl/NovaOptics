@@ -1,8 +1,8 @@
 | design | mean RMS WFE [waves] | max RMS WFE [waves] | time [s] |
 |---|---|---|---|
 | 3 elements (start) | 0.281 | 0.372 | 0 |
-| +1 air-spaced element | 0.203 | 0.290 | 445 |
-| cemented (behind surface 1) | 0.227 | 0.280 | 351 |
+| +1 air-spaced element | 0.187 | 0.243 | 701 |
+| cemented (behind surface 1) | 0.227 | 0.280 | 151 |
 
 f = 50 mm, F/4, +/-20 deg, F/d/C; dense 21-field grid; preferred SCHOTT glasses.
 
@@ -24,15 +24,15 @@ surf      R [mm]   t [mm]  material    label
 
 ```
 surf      R [mm]   t [mm]  material    label
-0         23.259    7.860  N-LASF41    E0 front
-1       -617.368    1.545  air         E0 rear
-2            inf    0.557  air         stop  (stop)
-3        -36.829    2.000  SF56A       E1 front
-4         23.294    2.013  air         E1 rear
-5       -116.190    2.000  SF2         new front
-6         59.527    1.051  air         new rear
-7         65.615    2.969  N-LASF31A   E2 front
-8        -26.484   39.484  air         E2 rear
+0         21.695    2.098  N-LASF41    E0 front
+1         40.737    7.312  air         E0 rear
+2            inf    0.503  air         stop  (stop)
+3        -30.318    2.000  SF56A       E1 front
+4         31.589    1.517  air         E1 rear
+5        108.482    5.320  N-LASF31A   E2 front
+6        -25.800    4.059  air         E2 rear
+7         26.796    8.000  N-LAF34     new front
+8         26.596   32.385  air         new rear
 9            inf    0.000  air         image
 ```
 
