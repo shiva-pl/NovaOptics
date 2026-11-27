@@ -100,3 +100,86 @@ def analysis_figure(fig, sp, o, p, m, title=""):
     draw_mtf(a[1, 1], m)
     if title:
         fig.suptitle(title, fontsize=9, color=INK, x=0.01, ha="left")
+
+
+def draw_system(ax, params, system, spec, n_rays=7, title=None, sd=None, config=None,
+                problem=None):
+    """Meridional (y-z) drawing of an engine system: surfaces as sag curves placed with
+    their coordinate frames, glass shaded between consecutive refracting surfaces,
+    mirrors as thick lines, rays of every field at the reference wavelength.
+
+    `params` is a list of surface dicts, or a design tree {"s", "mc"} with `problem`
+    and `config` (configuration index) to draw one configuration."""
+    import jax
+    import jax.numpy as jnp
+    from matplotlib.patches import Polygon
+
+    from ..plot import GLASS, GLASS_EDGE, PHASE
+    from .system import frames
+    from .trace import aim_chief, launch, sag, trace_ray
+
+    if isinstance(params, dict):
+        from .merit import config_spec, config_surfaces
+
+        c = config or 0
+        surfs = config_surfaces(params, problem, c)
+        spec = config_spec(spec, problem.configs[c])
+    else:
+        surfs = params
+    fr = frames(surfs, system)
+    wl = spec.ref_wavelength
+    py = jnp.linspace(-1, 1, n_rays)
+    paths = []
+    for f in spec.fields:
+        xy = aim_chief(surfs, system, jnp.asarray(f, float), wl)
+        one = lambda b: trace_ray(surfs, system, wl, *launch(xy, f, 0.0, b, spec.epd, system),
+                                  fr)
+        r = jax.vmap(one)(py)
+        paths.append((np.asarray(r["pts"]), np.asarray(r["local"])))
+    if sd is None:
+        sd = np.max([np.sqrt(np.max(loc[..., 0] ** 2 + loc[..., 1] ** 2, axis=0))
+                     for _, loc in paths], axis=0) * 1.02
+    curves = []
+    for i, s in enumerate(system.surfaces):
+        O, R = (np.asarray(a) for a in fr[i])
+        if s.shape == "cb" or i == system.n - 1 and s.interact == "none":
+            curves.append(None)
+            continue
+        h = max(float(sd[i]), 1e-3)
+        y = np.linspace(-h, h, 61)
+        z = np.array([float(sag(s, surfs[i], 0.0, yy)) for yy in y])
+        pts = O[None, :] + np.stack([np.zeros_like(y), y, z], 1) @ R.T
+        curves.append(pts)
+    for j, (pts, _) in enumerate(paths):
+        for k in range(pts.shape[0]):
+            ax.plot(pts[k, :, 2], pts[k, :, 1], color=SERIES[j % len(SERIES)], lw=0.6,
+                    alpha=0.85)
+    S = system.surfaces
+    for i, s in enumerate(S):
+        if curves[i] is None:
+            continue
+        if s.interact == "refract" and s.material not in ("air", "", "vacuum"):
+            j = next((k for k in range(i + 1, len(S)) if curves[k] is not None
+                      and S[k].interact == "refract"), None)
+            if j is not None:
+                a, b = curves[i], curves[j]
+                poly = np.r_[a[:, [2, 1]], b[::-1][:, [2, 1]]]
+                ax.add_patch(Polygon(poly, closed=True, fc=GLASS, ec=GLASS_EDGE, lw=0.8,
+                                     zorder=0))
+        if s.interact == "reflect":
+            ax.plot(curves[i][:, 2], curves[i][:, 1], color=GLASS_EDGE, lw=2.2)
+        elif s.stop:
+            c = curves[i]
+            ax.plot(c[[0, 0], 2], [c[0, 1] * 1.05, c[0, 1] * 1.6], color=INK, lw=1.5)
+            ax.plot(c[[-1, -1], 2], [c[-1, 1] * 1.05, c[-1, 1] * 1.6], color=INK, lw=1.5)
+        if s.phase and np.any(np.abs(np.asarray(surfs[i]["pcoef"])) > 1e-9):
+            ax.plot(curves[i][:, 2], curves[i][:, 1], color=PHASE, lw=1.8, ls=(0, (2, 1.5)))
+    O, R = (np.asarray(a) for a in fr[-1])
+    hi = np.max([np.abs(p[:, -1, 1]).max() for p, _ in paths]) * 1.15 + 1e-3
+    yy = np.array([-hi, hi])
+    ax.plot(O[2] + R[2, 1] * yy, O[1] + R[1, 1] * yy, color=INK, lw=1.0)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    if title:
+        ax.set_title(title, fontsize=9, color=INK, loc="left")
+    return sd

@@ -15,7 +15,7 @@ follow common lens design programs:
   for all following surfaces.  With
   order 0 it decenters then tilts (x, y, z); with order 1 it tilts (z, y, x) then
   decenters, which undoes an order-0 break with the opposite values.
-* Shapes: "conic" (c, k), "even" (conic + sum coef_j u^(2j+4)), "qbfs" (Forbes type 0),
+* Shapes: "conic" (c, k), "even" (conic + a2 r^2 + sum coef_j u^(2j+4)), "qbfs" (Forbes type 0),
   "qcon" (Forbes type 1), with u = r / r_norm.  See qpoly.py.
 * Phase (OPD, mm, added on the surface; the interface law turns its gradient into a
   change of the tangential ray momentum):
@@ -101,7 +101,7 @@ class System:
         return len(self.surfaces)
 
 
-KEYS = ("c", "k", "t", "dx", "dy", "tx", "ty", "tz", "freq", "nd", "vd", "sx", "sy")
+KEYS = ("c", "k", "t", "dx", "dy", "tx", "ty", "tz", "freq", "nd", "vd", "sx", "sy", "a2")
 
 
 def surface_params(s: Surface, **values):

@@ -79,30 +79,41 @@ def clear_compiled():
     release_memory(everything=True)
 
 
-def free_mask(params, free: dict):
-    mask = {}
-    for k, v in params.items():
-        m = np.zeros(np.shape(v), dtype=bool)
-        spec = free.get(k, False)
-        if spec is True:
-            m[...] = True
-        elif spec is False or spec is None:
-            pass
+def _mask_tree(params, free):
+    """Boolean tree shaped like `params`.  For a dict of arrays, `free` maps names to
+    True / False / an index array / a boolean array; nested dicts and lists (e.g. the
+    per-surface dicts of an engine system) take the same nested structure in `free`."""
+    if isinstance(params, dict):
+        free = free or {}
+        return {k: _mask_tree(v, free.get(k, False) if isinstance(free, dict) else free)
+                for k, v in params.items()}
+    if isinstance(params, (list, tuple)):
+        if isinstance(free, (list, tuple)):
+            return [_mask_tree(v, f) for v, f in zip(params, free)]
+        return [_mask_tree(v, free) for v in params]
+    m = np.zeros(np.shape(params), dtype=bool)
+    if free is True:
+        m[...] = True
+    elif free is False or free is None or isinstance(free, dict):
+        pass
+    else:
+        arr = np.asarray(free)
+        if arr.dtype == bool:
+            m[...] = arr
         else:
-            arr = np.asarray(spec)
-            if arr.dtype == bool:
-                m[...] = arr
-            else:
-                m[arr] = True
-        mask[k] = m
-    flat, _ = ravel_pytree({k: jnp.asarray(v) for k, v in mask.items()})
+            m[arr] = True
+    return jnp.asarray(m)
+
+
+def free_mask(params, free):
+    flat, _ = ravel_pytree(_mask_tree(params, free))
     return np.nonzero(np.asarray(flat) > 0.5)[0]
 
 
-def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform):
-    key = (layout, spec, idx_key, transform)
+def _compiled(layout: Layout, spec: Spec, unravel, idx_key, transform, residual_fn=None):
+    key = (layout, spec, idx_key, transform, residual_fn)
     with _LOCK:
-        return _compiled_locked(key, layout, spec, unravel, idx_key, transform)
+        return _compiled_locked(key, layout, spec, unravel, idx_key, transform, residual_fn)
 
 
 def _read_int(path):
@@ -208,7 +219,7 @@ def release_memory(everything=False):
     _trim()
 
 
-def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
+def _compiled_locked(key, layout, spec, unravel, idx_key, transform, residual_fn=None):
     if key in _CACHE:
         _CACHE.move_to_end(key)
     else:
@@ -230,7 +241,7 @@ def _compiled_locked(key, layout, spec, unravel, idx_key, transform):
             p = unravel(full.at[idx].set(x))
             if transform is not None:
                 p = transform(p, cfg, layout)
-            return residuals(p, layout, spec, cfg)
+            return (residual_fn or residuals)(p, layout, spec, cfg)
 
         # [residual, Jacobian, compiled?, compile lock]
         _CACHE[key] = [jax.jit(res), jax.jit(jax.jacfwd(res)), False, threading.Lock()]
@@ -259,7 +270,7 @@ def ensure_compiled(entry, x, full, cfg):
 
 
 def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verbose=False,
-             lam=1e-3, tol=None, transform=None):
+             lam=1e-3, tol=None, transform=None, residual_fn=None):
     """Minimize the merit over the `free` entries of `params` (Levenberg-Marquardt).
 
     Marquardt damping: lambda / 3 after an accepted step, x 4 after a rejected one.  The
@@ -268,6 +279,8 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     rule were tried: they saved few iterations and made the final designs worse, since
     the morph's homotopy path is sensitive to how each step converges.)
 
+    `residual_fn(params, layout, spec, cfg)` replaces the element-model merit (the
+    surface engine passes its own, with `layout` its hashable problem description).
     If `transform` (a module-level function `(z, cfg, layout) -> params`) is given,
     `params` is a design-variable pytree z that is mapped to system parameters
     before evaluating the merit; this is how continuation reparameterizations work.
@@ -278,7 +291,8 @@ def optimize(params, layout: Layout, spec: Spec, cfg, free: dict, iters=40, verb
     idx = free_mask(params, free)
     if idx.size == 0:
         return params, {}
-    entry = _compiled(layout, spec, unravel, tuple(int(i) for i in idx), transform)
+    entry = _compiled(layout, spec, unravel, tuple(int(i) for i in idx), transform,
+                      residual_fn)
     res, jac = entry[0], entry[1]
     x = full[idx]
     clock = time.perf_counter

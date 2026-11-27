@@ -49,6 +49,8 @@ def sag(s, p, x, y):
         return z
     k = p["k"]
     z = c * r2 / (1.0 + _sqrt(1.0 - (1.0 + k) * c * c * r2))
+    if s.shape == "even":
+        z = z + p["a2"] * r2  # unnormalized r^2 term (Zemax EVENASPH alpha_1)
     if s.shape == "even" and s.n_terms:
         rho = r2 / s.r_norm**2
         pw = [rho * rho]
@@ -78,7 +80,7 @@ def _intersect(s, p, pos, d, newton=6):
     t = t0 - C / jnp.where(jnp.abs(den) > _EPS, den, _EPS)
     pos = start
     ok = disc > 0
-    if s.shape in ("even", "qcon", "qbfs") and s.n_terms:
+    if s.shape == "even" or s.shape in ("qcon", "qbfs") and s.n_terms:
         def step(_, t):
             f = lambda tt: (pos[2] + tt * d[2]) - sag(s, p, pos[0] + tt * d[0],
                                                        pos[1] + tt * d[1])
@@ -90,7 +92,7 @@ def _intersect(s, p, pos, d, newton=6):
 
 
 def _normal(s, p, x, y):
-    if s.shape == "conic" or s.n_terms == 0 and s.shape != "cb":
+    if s.shape == "conic" or s.n_terms == 0 and s.shape not in ("cb", "even"):
         # analytic conic normal (also valid for c = 0)
         c, k = p["c"], (0.0 if s.shape == "qbfs" else p["k"])
         r2 = x * x + y * y
@@ -249,8 +251,8 @@ def bundle(params, system: System, spec: Spec, field_deg, wl_um, px, py, xy_chie
 
     Returns image-surface local (x, y) [P, 2], wavefront OPD [P] in mm relative to the
     chief ray on the reference sphere (centered on the reference-wavelength chief image
-    point, through the chief ray's last-surface intercept), validity flags, and the
-    chief-ray data.  OPD > 0 means the wavefront leads (the usual sign).
+    point, through the exit pupil), validity flags, and the chief-ray data.  OPD > 0
+    means the wavefront leads (the usual sign).
     """
     ref_wl = spec.ref_wavelength if ref_wl is None else ref_wl
     if xy_chief is None:
@@ -266,8 +268,7 @@ def bundle(params, system: System, spec: Spec, field_deg, wl_um, px, py, xy_chie
     r = jax.vmap(lambda a, b: one(a, b, wl_um))(px, py)
     P = chief_ref["pts"][-1]
     last = _last_interacting(system)
-    Q = chief_ref["pts"][last]
-    Rs = jnp.linalg.norm(Q - P)
+    Rs = _exit_pupil_distance(params, system, spec, field_deg, ref_wl, last, P)
 
     def to_sphere(pos, d, opl, n):
         w = pos - P
@@ -279,8 +280,35 @@ def bundle(params, system: System, spec: Spec, field_deg, wl_um, px, py, xy_chie
                                                         r["opl"][:, last], chief["n_img"])
     opl_c = to_sphere(chief["pts"][last], chief["dir"], chief["opl"][last], chief["n_img"])
     return {"img": r["local"][:, -1, :2], "opd": -(opl - opl_c), "ok": r["ok"],
+            "local": r["local"],
             "dir": r["dir"], "pts": r["pts"], "chief_img": chief["local"][-1, :2],
             "chief_ref_img": chief_ref["local"][-1, :2], "xy_chief": xy_chief, "R_ref": Rs}
+
+
+def _exit_pupil_distance(params, system, spec, field_deg, wl, last, P, r_max=1e5):
+    """Distance from the image point P back to the exit pupil along the chief ray.
+
+    The exit pupil center is where neighbouring chief rays (fields differing slightly
+    in y) cross in image space: with the chief ray's image-space line x0 + t d0 and its
+    derivative dx + t dd with respect to the field angle, it is at t* minimizing
+    |dx + t dd|.  This depends on the rays only, so surfaces that do nothing (a dummy
+    plane, a zero-power screen) do not change the reference sphere.  Telecentric image
+    space (no crossing) is capped at r_max."""
+    field_deg = jnp.asarray(field_deg, float)
+
+    def chief_line(fy):
+        f = field_deg.at[1].set(fy)
+        xy = aim_chief(params, system, f, wl)
+        o, d = launch(xy, f, 0.0, 0.0, spec.epd, system)
+        r = trace_ray(params, system, wl, o, d)
+        return r["pts"][last], r["dir"]
+
+    (x0, d0), (dx, dd) = jax.jvp(chief_line, (field_deg[1],), (jnp.asarray(1.0),))
+    den = jnp.dot(dd, dd)
+    t = -jnp.dot(dx, dd) / jnp.where(den > 1e-30, den, 1e-30)
+    E = x0 + t * d0
+    R = jnp.linalg.norm(E - P)
+    return jnp.where(den > 1e-30, jnp.minimum(R, r_max), r_max)
 
 
 def _last_interacting(system: System):
