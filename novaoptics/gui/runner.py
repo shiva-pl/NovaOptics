@@ -135,7 +135,14 @@ class _Lines(io.TextIOBase):
         return len(s)
 
 
-def run(opts: RunOptions, on_snap=None, on_design=None, on_log=None):
+def as_component_design(d: Design) -> "EngineDesign":
+    """A pipeline result as a native component design (pipeline path kept)."""
+    e = engine_from_design(d)
+    e.name, e.snaps, e.seconds = d.name, d.snaps, d.seconds
+    return evaluate_engine(e)
+
+
+def run(opts: RunOptions, on_snap=None, on_design=None, on_log=None, as_components=False):
     """Run one job; returns the finished designs (also passed one by one to on_design).
 
     on_snap(label, snapshot) is called from worker threads for every pipeline snapshot.
@@ -152,6 +159,8 @@ def run(opts: RunOptions, on_snap=None, on_design=None, on_log=None):
     def done(d):
         log(f"evaluating {d.name} on the dense field grid ...")
         evaluate(d)
+        if as_components:
+            d = as_component_design(d)
         out.append(d)
         log(f"### {d.name}: mean {d.perf['mean_wfe']:.3f}, max {d.perf['max_wfe']:.3f} waves "
             f"({d.seconds:.0f} s)\n{d.prescription}\n")
@@ -304,8 +313,13 @@ class EngineDesign:
 
 def engine_prescription(problem, params) -> str:
     from ..engine import merit as EM
+    from ..engine.components import describe as describe_components
+    from ..engine.components import group
 
     S = problem.system.surfaces
+    head = ["components:", describe_components(problem.system, params["s"],
+                                              group(problem.system, params["s"])), "",
+            "surfaces:"]
     lines = [f"{'surf':<5}{'type':<8}{'R [mm]':>12}{'t [mm]':>10}  {'material':<14}{'conic':>9}"
              f"  label"]
     for i, (s, p) in enumerate(zip(S, params["s"])):
@@ -335,7 +349,7 @@ def engine_prescription(problem, params) -> str:
                                                " (no EFL target)")
             lines.append(f"  {c + 1} {conf.name}: {vals}{wl}{efl}")
     del EM
-    return "\n".join(lines)
+    return "\n".join(head + lines)
 
 
 def evaluate_engine(d: EngineDesign, n_field=21) -> EngineDesign:
@@ -382,9 +396,21 @@ def evaluate_engine(d: EngineDesign, n_field=21) -> EngineDesign:
                     "efl": efl})
     nanc = np.full(1, np.nan)
     p0 = per[0]
+    try:  # AD field curves of the first configuration
+        from ..engine.analysis import focus_shifts
+
+        sp0 = EM.config_spec(spec, prob.configs[0])
+        fmax = max(sp0.fields, key=lambda f: np.hypot(*f))
+        r0 = np.hypot(*fmax)
+        u0 = np.asarray(fmax) / r0 if r0 > 0 else np.array([0.0, 1.0])
+        cf = tuple(tuple(float(v) for v in u0 * a) for a in np.linspace(0, r0, 11))
+        st, ss = focus_shifts(EM.config_surfaces(P, prob, 0), prob.system, sp0, cf)
+        curve = (np.linspace(0, r0, 11), st, ss)
+    except Exception:  # noqa: BLE001 - e.g. afocal or off-axis without a meaningful focus
+        curve = (nanc, nanc, nanc)
     d.perf = {"field_deg": p0["field_deg"], "rms_wfe": p0["rms_wfe"],
               "rms_spot_um": p0["rms_spot_um"], "distortion": p0["distortion"],
-              "curve_deg": nanc, "tangential": nanc, "sagittal": nanc,
+              "curve_deg": curve[0], "tangential": curve[1], "sagittal": curve[2],
               "mean_wfe": rep["mean_wfe"], "max_wfe": rep["max_wfe"],
               "mean_spot_um": float(np.mean([q["rms_spot_um"].mean() for q in per])),
               "efl": p0["efl"],

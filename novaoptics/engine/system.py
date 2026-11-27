@@ -20,6 +20,9 @@ follow common lens design programs:
 * Phase (OPD, mm, added on the surface; the interface law turns its gradient into a
   change of the tangential ray momentum):
     "ideal"        W = sum pcoef_k rho^k, rho = r^2 / r_norm^2, achromatic
+    "glass"        like "ideal", scaled by (n(lambda) - 1) / (n_d - 1) of the glass in
+                   front of the surface: an ideal screen that disperses like that glass
+                   (the residual phase of the phase-to-glass morph)
     "diffractive"  W = order * lambda * sum pcoef_k rho^k   (pcoef_k in waves)
     "grating"      W = order * lambda * freq * y            (freq in lines/mm, lines // x)
 * The stop surface carries an aiming target (sx, sy) in its local coordinates, so
@@ -34,7 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 SHAPES = ("conic", "even", "qbfs", "qcon", "cb")
-PHASES = ("", "ideal", "diffractive", "grating")
+PHASES = ("", "ideal", "glass", "diffractive", "grating")
 
 
 @dataclass(frozen=True)

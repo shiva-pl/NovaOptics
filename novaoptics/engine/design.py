@@ -36,6 +36,7 @@ from .system import Spec, Surface, surface_params
 
 AIR = ("air", "", "vacuum")
 X_MAX = 4.0
+M_LAMBDA_D = 0.5875618
 
 
 # --------------------------------------------------------------------------- basics
@@ -100,8 +101,9 @@ def cost(problem, params, spec, **cfg_kw):
     return optimize_design(problem, params, spec, iters=0, **cfg_kw)[1].get("cost", np.inf)
 
 
-def mean_wfe(problem, params, spec):
-    return float(np.mean(np.concatenate(EM.rms_wfe(params, problem, spec))))
+def mean_wfe(problem, params, spec, vp=0.0):
+    """Mean RMS WFE [waves]; vp = 1 judges phase screens with virtual Petzval."""
+    return float(np.mean(np.concatenate(EM.rms_wfe(params, problem, spec, vp))))
 
 
 def clear_semi_diameters(problem, params, spec):
@@ -180,24 +182,29 @@ def morph_element(z, cfg, problem: EM.Problem):
 def _morph(problem, params, spec, steps=20, iters=30, mu_b=1e-5, jump=1.5, polish_iters=80,
            log=None):
     """Morph problem.morphing[0] into glass (adaptive homotopy steps, as in MATERIALIZE)."""
+    from . import materials as M
+
     f, r = problem.morphing[0]
     rn = problem.system.surfaces[r].r_norm
     pr = params["s"][r]
+    mat = problem.system.surfaces[f].material
+    nd = params["s"][f]["nd"] if mat == "model" else M.index(mat, M_LAMBDA_D)
     z = {"s": params["s"], "mc": params["mc"],
          "m": {"phi": -2.0 * pr["pcoef"][0] / rn**2, "xi": jnp.asarray(0.0),
                "dc1": jnp.asarray(0.0), "dc2": jnp.asarray(0.0), "t": params["s"][f]["t"],
-               "bhi": pr["pcoef"][1:], "nd": params["s"][f]["nd"], "vd": params["s"][f]["vd"]}}
+               "bhi": pr["pcoef"][1:], "nd": jnp.asarray(nd, float),
+               "vd": params["s"][f]["vd"]}}
     free = variables(problem)
     free["s"][f] = {}
     free["s"][r] = {"t": True}
-    free["m"] = {k: True for k in z["m"]}
+    free["m"] = {k: True for k in z["m"] if mat == "model" or k not in ("nd", "vd")}
 
     def step(z, s):
         mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
         z, _ = optimize_design(problem, z, spec, free, iters=iters, transform=morph_element,
-                               s=s, mu=mu)
+                               s=s, mu=mu, virtual_petzval=1.0)
         p = morph_element(z, EM.make_cfg(s=s), problem)
-        return z, p, mean_wfe(problem, p, spec)
+        return z, p, mean_wfe(problem, p, spec, vp=1.0)
 
     ds0 = 1.0 / steps
     s_prev, ds, prev = 0.0, ds0, None
@@ -228,7 +235,8 @@ def insert_screen(problem: EM.Problem, params, i, r_norm, glass=(1.62, 50.0), n_
     front of the first surface, `front_gap` ahead of it).  The system is unchanged;
     the new pair is marked as morphing (problem.morphing)."""
     front = Surface(material="model", label="new front")
-    rear = Surface(phase="ideal", n_phase=n_phase, r_norm=r_norm, label="new rear")
+    # the screen disperses like the glass of its slab (as in the pipeline's COLOR stage)
+    rear = Surface(phase="glass", n_phase=n_phase, r_norm=r_norm, label="new rear")
     p = dict(params, s=[dict(q) for q in params["s"]])
     if i >= 0:
         t = float(params["s"][i]["t"])
@@ -268,10 +276,10 @@ def add_element(problem: EM.Problem, params, spec: Spec, positions=None, glass=(
         f, r = i + 1, i + 2
         # phase space: the screen takes power and aspheric phase, the rest re-balances
         free = variables(prob)
-        free["s"][f] = {}
+        free["s"][f] = {"nd": True, "vd": True}  # color correction in phase space
         free["s"][r] = {"t": True, "pcoef": True}
-        p, _ = optimize_design(prob, p, spec, free, iters=80, s=0.0)
-        phase_wfe = mean_wfe(prob, p, spec)
+        p, _ = optimize_design(prob, p, spec, free, iters=80, s=0.0, virtual_petzval=1.0)
+        phase_wfe = mean_wfe(prob, p, spec, vp=1.0)
         prob, p = _morph(prob, p, spec, steps=steps)
         glass_wfe = mean_wfe(prob, p, spec)
         if snap:
@@ -439,3 +447,142 @@ def dense_report(problem: EM.Problem, params, spec: Spec, n_field=21, n_rings=8,
     allw = np.concatenate(per)
     return {"per_config": per, "mean_wfe": float(allw.mean()), "max_wfe": float(allw.max()),
             "field_deg": np.linspace(0, r, n_field)}
+
+
+# --------------------------------------------------------------------------- components
+
+def components(problem: EM.Problem, params=None):
+    from .components import group
+
+    return group(problem.system, None if params is None else params["s"])
+
+
+def materialize(problem: EM.Problem, params, spec: Spec, k, steps=20, snap=True, log=None):
+    """Turn phase-screen component k into a glass lens (the phase-to-glass morph).
+
+    A screen on its zero-thickness slab is morphed directly; a bare screen (e.g. an
+    imported paraxial lens) first gets the slab, which changes nothing.  Gratings and
+    diffractive screens stay phase screens (their phase is wavelength dependent by
+    nature)."""
+    comp = components(problem, params)[k]
+    S = problem.system.surfaces
+    if comp.kind != "screen" or S[comp.end].phase not in ("ideal", "glass"):
+        raise ValueError(f"component {k} is not an ideal phase screen")
+    if comp.end == comp.start:  # bare screen: add the slab in front of it
+        s_r = S[comp.end]
+        prob, p = insert_surfaces(problem, params, comp.start,
+                                  [Surface(material="model", label=f"{comp.label} front")],
+                                  [dict(t=0.0, nd=1.62, vd=50.0)])
+        f, r = comp.start, comp.start + 1
+        if s_r.n_phase < 4:  # room for aspheric phase during the morph
+            pc = np.zeros(4)
+            pc[:s_r.n_phase] = np.asarray(p["s"][r]["pcoef"])
+            prob, p = replace_surface(prob, p, r, dataclasses.replace(s_r, n_phase=4),
+                                      pcoef=pc)
+    else:
+        prob, p, f, r = problem, params, comp.start, comp.end
+    if prob.system.surfaces[r].phase == "ideal":  # disperse like the slab's glass
+        prob, p = replace_surface(prob, p, r, dataclasses.replace(prob.system.surfaces[r],
+                                                                   phase="glass"))
+    prob = dataclasses.replace(prob, morphing=((f, r),))
+    prob, p = _morph(prob, p, spec, steps=steps, log=log)
+    if snap:
+        prob, p = snap_glasses(prob, p, spec)
+    return prob, p
+
+
+def dematerialize(problem: EM.Problem, params, spec: Spec, k, n_phase=4, iters=150):
+    """Replace lens component k (a singlet) by an ideal phase screen with the lens'
+    paraxial matrix (power and principal planes), on a zero-thickness slab of the lens'
+    glass, dispersing like it (so first-order properties and color are kept).  The screen's phase and the two
+    neighbouring spaces are optimized; the rest of the design is untouched.  The
+    phase-first way to re-think one element: materialize() turns it back into glass,
+    possibly bent differently."""
+    from .components import paraxial_matrix
+
+    comp = components(problem, params)[k]
+    if comp.kind != "lens" or comp.end != comp.start + 1:
+        raise ValueError(f"component {k} is not a singlet")
+    S = problem.system.surfaces
+    # a thin screen of power phi with air spaces a in front, b behind has the matrix
+    # [[1 - b phi, .], [-phi, 1 - a phi]]: matching A, C, D matches B too (det = 1),
+    # so the lens is replaced exactly to first order
+    (A, B), (C, Dm) = paraxial_matrix(comp, problem.system, params["s"])
+    phi = -C
+    a, b = (1.0 - Dm) / phi, (1.0 - A) / phi
+    sd = clear_semi_diameters(problem, params, spec)
+    rn = float(max(sd[comp.start], sd[comp.end], 1.0))
+    sp = [dict(q) for q in params["s"]]
+    before = comp.start - 1
+    gap_after = float(sp[comp.end]["t"]) + b
+    if before >= 0:
+        sp[before] = dict(sp[before], t=sp[before]["t"] + a)
+    glass = S[comp.start].material
+    front = Surface(material=glass, label=f"{comp.label} front")
+    rear = Surface(phase="glass", n_phase=n_phase, r_norm=rn, label=f"{comp.label} rear")
+    surfs = list(S[:comp.start]) + [front, rear] + list(S[comp.end + 1:])
+    a1 = -phi * rn**2 / 2.0  # the paraxial power, exactly
+    pc = _fit_screen_phase(problem, params, spec, comp, a, rn, n_phase, a1)
+    if pc is None:  # no rays: the paraxial power alone
+        pc = np.zeros(n_phase)
+        pc[0] = a1
+    gp = {k: params["s"][comp.start][k] for k in ("nd", "vd")}
+    vals = [surface_params(front, t=0.0, **gp),
+            surface_params(rear, t=gap_after, pcoef=pc)]
+    sp = sp[:comp.start] + vals + sp[comp.end + 1:]
+    prob = dataclasses.replace(problem, system=dataclasses.replace(problem.system,
+                                                                   surfaces=tuple(surfs)),
+                               morphing=((comp.start, comp.end),))
+    p = dict(params, s=sp)
+    # the screen takes over the lens: its phase and the two neighbouring spaces
+    free = {"s": [{} for _ in surfs], "mc": [{} for _ in prob.configs]}
+    free["s"][comp.end] = {"t": True, "pcoef": True}
+    if before >= 0:
+        free["s"][before] = {"t": True}
+    p, _ = optimize_design(prob, p, spec, free, iters=iters, s=0.0, virtual_petzval=1.0)
+    return dataclasses.replace(prob, morphing=()), p
+
+
+def _fit_screen_phase(problem, params, spec, comp, a, rn, n_phase, a1, rings=6, arms=12):
+    """Phase coefficients of a screen that bends rays like lens `comp` does.
+
+    Rays of every field (reference wavelength) are traced through the system; for each
+    the lens changes the transverse direction by g = d_out - d_in (air on both sides).
+    A screen W = sum a_k rho^k at the plane `a` behind the lens' front vertex must have
+    grad W = g where the incoming ray crosses that plane: linear least squares in the
+    aspheric a_k (k >= 2), with a_1 = `a1` fixed (the paraxial power, so the swap stays
+    exact to first order).
+    """
+    from .trace import bundle
+
+    px, py, _ = EM.pupil_quadrature(rings, arms)
+    rows, rhs = [], []
+    for f in spec.fields:
+        b = bundle(params["s"], problem.system, spec, jnp.asarray(f, float),
+                   spec.ref_wavelength, jnp.asarray(px), jnp.asarray(py))
+        pts = np.asarray(b["pts"])  # [P, S, 3] global intercepts
+        if comp.start == 0 or comp.end + 1 >= pts.shape[1]:
+            return None
+        din = pts[:, comp.start] - pts[:, comp.start - 1]
+        dout = pts[:, comp.end + 1] - pts[:, comp.end]
+        din /= np.linalg.norm(din, axis=1, keepdims=True)
+        dout /= np.linalg.norm(dout, axis=1, keepdims=True)
+        z0 = pts[:, comp.start, 2] * 0 + float(np.asarray(_vertex_z(problem, params,
+                                                                    comp.start)))
+        tz = (z0 + a - pts[:, comp.start - 1, 2]) / din[:, 2]
+        hit = pts[:, comp.start - 1] + tz[:, None] * din
+        x, y = hit[:, 0], hit[:, 1]
+        rho = (x * x + y * y) / rn**2
+        for xy, g in ((x, dout[:, 0] - din[:, 0]), (y, dout[:, 1] - din[:, 1])):
+            rows.append(np.stack([2.0 * xy / rn**2 * k * rho ** (k - 1)
+                                  for k in range(2, n_phase + 1)], 1))
+            rhs.append(g - 2.0 * xy / rn**2 * a1)
+    A = np.concatenate(rows)
+    coef, *_ = np.linalg.lstsq(A, np.concatenate(rhs), rcond=None)
+    return np.r_[a1, coef]
+
+
+def _vertex_z(problem, params, i):
+    from .system import frames
+
+    return frames(params["s"], problem.system)[i][0][2]

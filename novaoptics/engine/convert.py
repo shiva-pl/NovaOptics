@@ -15,8 +15,8 @@ def from_layout(params, layout: Layout, epd, fields_deg, wavelengths=G.VISIBLE):
 
     Exact catalog glasses keep their names; continuous glasses become "model" glasses
     (n_d, V_d, two-term Cauchy, as in the element model without a catalog).  Residual
-    phase screens become achromatic "ideal" phase (the element model disperses them like
-    their glass, so designs with residual phase are only approximated).
+    phase screens become "glass" phase, which disperses like the element's glass, as in
+    the element model.
     """
     p = {k: np.asarray(v) for k, v in G.resolve(params, layout).items()}
     b = Builder(z_launch=layout.z_launch)
@@ -33,8 +33,8 @@ def from_layout(params, layout: Layout, epd, fields_deg, wavelengths=G.VISIBLE):
         rear = {"c": float(p["c2"][i]), "t": gap, "material": "air", "label": f"E{i} rear"}
         if layout.aspheres:
             rear.update(shape="even", coef=p["asph"][i], r_norm=layout.r_norm)
-        if np.any(p["phase"][i] != 0):
-            rear.update(phase="ideal", pcoef=p["phase"][i], r_norm=layout.r_norm)
+        if np.any(p["phase"][i] != 0):  # residual phase disperses like the element's glass
+            rear.update(phase="glass", pcoef=p["phase"][i], r_norm=layout.r_norm)
         b.add(**rear)
     b.image()
     system, prm = b.build()

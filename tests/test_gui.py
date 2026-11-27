@@ -72,10 +72,10 @@ def test_window_smoke():
     assert w.layout_plot.figure.axes
     from novaoptics.gui.app import _analysis
 
-    res = _analysis((d, 4))  # what the analysis tab computes, here synchronously
+    res = _analysis((d, 4, 0))  # what the analysis tab computes, here synchronously
     assert 0 < res["psf"]["strehl"] < 1 and res["spot"]["rms_um"] > 0
-    w._analysis_shown = (d, 4)
-    w._on_analysis((d, 4), res)
+    w._analysis_shown = (d, 4, 0)
+    w._on_analysis((d, 4, 0), res)
     assert w.analysis_status.text().startswith("Strehl")
     opts = w.options()
     assert opts.workflow == "phase-first" and opts.spec().efl == 50.0
@@ -101,8 +101,9 @@ def test_lens_data_editor_round_trip():
     assert spec.fields == d.spec.fields and spec.wavelengths == pytest.approx(d.spec.wavelengths)
     assert ED.mean_wfe(prob, params, spec) == pytest.approx(ED.mean_wfe(d.problem, d.params,
                                                                         d.spec), rel=1e-9)
-    # a zoom-like operand: the back focal distance per configuration
-    w.add_config()
+    # a zoom-like operand: the back focal distance per configuration (the table starts
+    # with the design's one configuration)
+    assert w.ctable.rowCount() == 1
     w.add_config()
     col = 1
     w.ctable.insertColumn(col)

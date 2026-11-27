@@ -27,6 +27,7 @@ from . import qpoly
 from .system import Spec, System, frames
 
 _EPS = 1e-14
+LAMBDA_D = 0.5875618
 
 
 def _sqrt(x):
@@ -138,6 +139,7 @@ def trace_ray(params, system: System, wl_um, origin, direction, fr=None):
     n1 = jnp.asarray(1.0)
     ok = jnp.asarray(True)
     pts, opls, locs = [], [], []
+    medium = ("air", None)  # material and parameters of the medium the ray is in
     for s, p, (O, R) in zip(system.surfaces, params, fr):
         if s.shape == "cb":
             pts.append(pos)
@@ -157,6 +159,10 @@ def trace_ray(params, system: System, wl_um, origin, direction, fr=None):
             if s.phase:
                 W, (gx, gy) = jax.value_and_grad(
                     lambda xy: phase(s, p, xy[0], xy[1], wl_um))(q[:2])
+                if s.phase == "glass" and medium[0] not in M.AIR:
+                    # disperses like the glass it sits on: (n(lambda) - 1) / (n_d - 1)
+                    kap = (n1 - 1.0) / (M.index(medium[0], LAMBDA_D, medium[1]) - 1.0)
+                    W, gx, gy = kap * W, kap * gx, kap * gy
                 opl = opl + W
                 v = v + jnp.array([gx, gy, 0.0])
             vn = jnp.dot(v, N)
@@ -173,6 +179,8 @@ def trace_ray(params, system: System, wl_um, origin, direction, fr=None):
         pos = O + R @ q
         d = R @ dl
         n1 = n2
+        if s.interact == "refract":
+            medium = (s.material, p)
         pts.append(pos)
         opls.append(opl)
         locs.append(q)

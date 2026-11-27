@@ -44,7 +44,7 @@ def _kind(s: Surface):
 
 
 def _fmt_r(c):
-    return "inf" if abs(c) < 1e-12 else f"{1.0 / c:.6g}"
+    return "inf" if abs(c) < 1e-12 else f"{1.0 / c:.12g}"
 
 
 def _parse_r(text):
@@ -96,6 +96,16 @@ class LensDataEditor(QtWidgets.QWidget):
             form.addWidget(w, 2 if lab in ("fields [deg]", "wavelengths [µm]") else 1)
         v.addLayout(form)
 
+        v.addWidget(QtWidgets.QLabel("Components (grouped from the surfaces below)"))
+        self.comps = QtWidgets.QTableWidget(0, 5)
+        self.comps.setHorizontalHeaderLabels(["component", "label", "surfaces", "power [1/m]",
+                                              "details"])
+        self.comps.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
+        self.comps.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.comps.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.comps.verticalHeader().setVisible(False)
+        v.addWidget(self.comps, 2)
+        v.addWidget(QtWidgets.QLabel("Surfaces"))
         self.table = QtWidgets.QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
@@ -150,9 +160,9 @@ class LensDataEditor(QtWidgets.QWidget):
         self._set_enabled(True)
         self.info.setText(f"{d.name}  ({d.note})" if d.note else d.name)
         prob, P, spec = d.problem, d.params, d.spec
-        self.epd.setText(f"{spec.epd:g}")
-        self.fields.setText("; ".join(f"{x:g},{y:g}" for x, y in spec.fields))
-        self.wls.setText(" ".join(f"{w:g}" for w in spec.wavelengths))
+        self.epd.setText(f"{spec.epd:.10g}")
+        self.fields.setText("; ".join(f"{x:.10g},{y:.10g}" for x, y in spec.fields))
+        self.wls.setText(" ".join(f"{w:.10g}" for w in spec.wavelengths))
         self.efl.setText("" if prob.targets.efl is None else f"{prob.targets.efl:g}")
         self.track.setText("" if prob.targets.max_track is None else f"{prob.targets.max_track:g}")
         free = d.free or {"s": [{} for _ in prob.system.surfaces]}
@@ -161,6 +171,25 @@ class LensDataEditor(QtWidgets.QWidget):
         for i, (s, p) in enumerate(zip(prob.system.surfaces, P["s"])):
             self._add_row(i, s, p, free["s"][i] if i < len(free["s"]) else {})
         self._load_configs()
+        self._load_components()
+
+    def _load_components(self):
+        from ..engine.components import rows
+
+        d = self.design
+        rs = rows(d.problem.system, d.params["s"])
+        self.comps.setRowCount(len(rs))
+        for r, row in enumerate(rs):
+            vals = [row["kind"], row["label"], row["surfaces"],
+                    "" if row["power"] is None else f"{row['power']:+.2f}",
+                    row["details"] + ("" if row["space"] is None else
+                                      f"   (space after {row['space']:.3f} mm)")]
+            for k, val in enumerate(vals):
+                self.comps.setItem(r, k, QtWidgets.QTableWidgetItem(val))
+
+    def selected_component(self):
+        r = self.comps.currentRow()
+        return r if r >= 0 else None
 
     def _add_row(self, at, s: Surface, p, fr, src=None):
         self.table.insertRow(at)
@@ -173,10 +202,10 @@ class LensDataEditor(QtWidgets.QWidget):
         cb = s.shape == "cb"
         mat = s.material
         if mat == "model":
-            mat = f"{float(p['nd']):.5g}/{float(p['vd']):.4g}"
-        vals = ["" if cb else _fmt_r(float(p["c"])), f"{float(p['t']):.6g}",
+            mat = f"{float(p['nd']):.10g}/{float(p['vd']):.10g}"
+        vals = ["" if cb else _fmt_r(float(p["c"])), f"{float(p['t']):.12g}",
                 "" if s.interact != "refract" else ("" if mat == "air" else mat),
-                "" if cb else f"{float(p['k']):.6g}"]
+                "" if cb else f"{float(p['k']):.12g}"]
         for c, val in enumerate(vals, start=2):
             self.table.setItem(at, c, QtWidgets.QTableWidgetItem(val))
         for c, key in ((6, "c"), (7, "t")):
@@ -202,7 +231,7 @@ class LensDataEditor(QtWidgets.QWidget):
                 key = EM.key_name(i, k)
                 v = P["mc"][r].get(key)
                 self.ctable.setItem(r, j, QtWidgets.QTableWidgetItem(
-                    "" if v is None else f"{float(v):.6g}"))
+                    "" if v is None else f"{float(v):.12g}"))
             wl = "" if conf.wavelengths is None else " ".join(f"{w:g}" for w in conf.wavelengths)
             self.ctable.setItem(r, len(ops) + 1, QtWidgets.QTableWidgetItem(wl))
             self.ctable.setItem(r, len(ops) + 2, QtWidgets.QTableWidgetItem(

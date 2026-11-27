@@ -39,7 +39,10 @@ from .trace import bundle, focal_length
 
 # mechanical defaults as in the element model (continuation.Mech)
 DEFAULT_CFG = dict(mu=0.0, s=1.0, w_spot=1.0, w_efl=300.0, w_dist=50.0, w_constraint=10.0,
-                   tmin=2.0, tmax=8.0, emin=1.0, gmin=1.0, bfd_min=5.0, w_glass=1.0)
+                   tmin=2.0, tmax=8.0, emin=1.0, gmin=1.0, bfd_min=5.0, w_glass=1.0,
+                   virtual_petzval=0.0)
+
+FUTURE_GLASS_ND = 1.62  # index assumed for a bare screen in air (no slab yet)
 
 
 def make_cfg(**kw):
@@ -173,10 +176,33 @@ def _runs(system: System):
     return pairs
 
 
+def virtual_petzval(surfs, system: System, weight):
+    """Image surface pre-curved by the Petzval curvature the ideal phase screens will
+    acquire as glass: sum(phi_i / n_i) (see merit.py of the element model).  A phase
+    screen has no Petzval curvature of its own, so without this a phase system is
+    judged against the wrong field curvature and screens look far worse (or better)
+    than the glass they stand for."""
+    from . import materials as M
+
+    c = 0.0
+    S = system.surfaces
+    for i, s in enumerate(S):
+        if s.phase in ("ideal", "glass") and s.n_phase:
+            phi = -2.0 * surfs[i]["pcoef"][0] / s.r_norm**2
+            prev = S[i - 1].material if i > 0 else "air"
+            n = FUTURE_GLASS_ND if prev in ("air", "", "vacuum") else \
+                M.index(prev, 0.5875618, surfs[i - 1])
+            c = c + phi / n
+    out = list(surfs)
+    out[-1] = dict(out[-1], c=out[-1]["c"] + weight * c)
+    return out
+
+
 def config_residuals(surfs, problem: Problem, spec: Spec, conf: Config, cfg):
     from .trace import sag
 
     system, targets = problem.system, problem.targets
+    surfs = virtual_petzval(surfs, system, cfg["virtual_petzval"])
     ev = evaluate_config(surfs, system, spec, targets)
     F, W = len(spec.fields), len(spec.wavelengths)
     fw = jnp.asarray(spec.fweights) / np.sum(spec.fweights)
@@ -245,7 +271,7 @@ def config_residuals(surfs, problem: Problem, spec: Spec, conf: Config, cfg):
             if targets.region is not None:
                 g.append(10.0 * _hinge(G.ndvd_hull_violation(nd, vd, targets.region)))
             out.append(cfg["w_glass"] * cfg["w_constraint"] * jnp.stack(g))
-        if s.phase == "ideal" and s.n_phase > 1:
+        if s.phase in ("ideal", "glass") and s.n_phase > 1:
             lam = spec.ref_wavelength * 1e-3
             out.append(jnp.sqrt(cfg["mu"]) * p["pcoef"][1:] / lam)
     del F, W
@@ -289,18 +315,21 @@ def compiled(name, problem, spec, fn):
     return f
 
 
-def rms_wfe(params, problem: Problem, spec: Spec):
-    """Polychromatic RMS wavefront error [waves] per configuration and field."""
-    f = compiled("rms_wfe", problem, spec, lambda p: _rms_wfe(p, problem, spec))
+def rms_wfe(params, problem: Problem, spec: Spec, virtual_petzval_weight=0.0):
+    """Polychromatic RMS wavefront error [waves] per configuration and field (with
+    virtual_petzval_weight = 1: on the image surface the phase screens' glass will
+    curve, as the pipeline judges phase systems)."""
+    vp = float(virtual_petzval_weight)
+    f = compiled(f"rms_wfe {vp}", problem, spec, lambda p: _rms_wfe(p, problem, spec, vp))
     return [np.asarray(a) for a in f(params)]
 
 
-def _rms_wfe(params, problem: Problem, spec: Spec):
+def _rms_wfe(params, problem: Problem, spec: Spec, vp=0.0):
     res = []
     for c, conf in enumerate(problem.configs):
         sp = config_spec(spec, conf)
-        ev = evaluate_config(config_surfaces(params, problem, c), problem.system, sp,
-                             problem.targets)
+        surfs = virtual_petzval(config_surfaces(params, problem, c), problem.system, vp)
+        ev = evaluate_config(surfs, problem.system, sp, problem.targets)
         wl_mm = jnp.asarray(sp.wavelengths)[None, :, None] * 1e-3
         opd = ev["opd"] / wl_mm
         opd = opd - jnp.sum(opd * ev["wt"], -1, keepdims=True)

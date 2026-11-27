@@ -250,6 +250,8 @@ class MainWindow(QtWidgets.QMainWindow):
         m.addAction("&Optimize", self.optimize_selected)
         m.addAction("&Add an element", self.add_element_selected)
         m.addAction("&Cement a glass to an element…", self.cement_selected)
+        m.addAction("&Materialize a phase screen…", self.materialize_selected)
+        m.addAction("&Dematerialize a lens into a phase screen…", self.dematerialize_selected)
         m.addAction("&Snap model glasses to the catalog", self.snap_selected)
         m.addAction("&Per-wavelength focus (one image plane per wavelength)",
                     self.per_wavelength_selected)
@@ -551,7 +553,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _job(self, opts):
         b = self.bridge
         try:
-            R.run(opts, on_snap=b.snap.emit, on_design=b.design.emit, on_log=b.log.emit)
+            R.run(opts, on_snap=b.snap.emit, on_design=b.design.emit, on_log=b.log.emit,
+                  as_components=True)
             b.finished.emit(None)
         except progress.Cancelled:
             b.finished.emit("cancelled")
@@ -636,8 +639,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(r, c, it)
         name = self._design_path_name(d)
-        if isinstance(d, R.EngineDesign):
-            self.paths[name] = [_EngineSnap(d)]
+        if isinstance(d, R.EngineDesign):  # pipeline path (if any), then the design
+            self.paths[name] = list(d.snaps) + [_EngineSnap(d)]
         elif d.snaps:
             self.paths[name] = d.snaps
         else:
@@ -971,6 +974,53 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._derived(d, prob, p, f"cemented at surface {rear}", time.time() - t)
 
         self._action(f"cementing a glass behind surface {rear} of {d.name}", fn)
+
+    def _pick_component(self, d, kinds, title):
+        from ..engine.components import group
+
+        comps = [(k, c) for k, c in enumerate(group(d.problem.system, d.params["s"]))
+                 if c.kind in kinds]
+        if not comps:
+            QtWidgets.QMessageBox.information(self, "NovaOptics", f"No {' / '.join(kinds)} "
+                                              "component in this design.")
+            return None
+        items = [f"{k}: {c.kind} {c.label} (surfaces {c.start}-{c.end})" for k, c in comps]
+        pre = self.lensdata.selected_component()
+        cur = next((i for i, (k, _) in enumerate(comps) if k == pre), 0)
+        item, ok = QtWidgets.QInputDialog.getItem(self, title, "Component:", items, cur, False)
+        return comps[items.index(item)][0] if ok else None
+
+    def materialize_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        k = self._pick_component(d, ("screen",), "Materialize")
+        if k is None:
+            return
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            prob, p = ED.materialize(d.problem, d.params, d.spec, k, log=print)
+            return self._derived(d, prob, p, f"component {k} materialized", time.time() - t)
+
+        self._action(f"materializing component {k} of {d.name}", fn)
+
+    def dematerialize_selected(self):
+        d = self._engine_selected()
+        if d is None:
+            return
+        k = self._pick_component(d, ("lens",), "Dematerialize")
+        if k is None:
+            return
+        from ..engine import design as ED
+
+        def fn():
+            t = time.time()
+            prob, p = ED.dematerialize(d.problem, d.params, d.spec, k)
+            return self._derived(d, prob, p, f"component {k} as a phase screen", time.time() - t)
+
+        self._action(f"dematerializing component {k} of {d.name}", fn)
 
     def snap_selected(self):
         d = self._engine_selected()

@@ -230,3 +230,37 @@ def analyze(params, system: System, spec: Spec, field, n=64, pad=4):
     o = opd_map(params, system, spec, field)
     p = psf(params, system, spec, field, n=n, pad=pad)
     return {"spot": sp, "opd": o, "psf": p, "mtf": mtf(params, system, spec, field, p=p)}
+
+
+def focus_shifts(params, system: System, spec: Spec, fields, wl=None):
+    """Tangential and sagittal focus positions relative to the image surface [mm] for
+    each field, from forward-mode AD of rays around the chief ray (generalized ray
+    trace): d(image position)/d(pupil) and d(image slope)/d(pupil), in the image
+    surface's frame."""
+    from . import merit as EM
+    from .system import frames
+    from .trace import aim_chief, launch, trace_ray
+
+    wl = spec.ref_wavelength if wl is None else wl
+    fields = jnp.asarray(fields, float)
+
+    def fn(p):
+        R_img = frames(p, system)[-1][1]
+
+        def per_field(f):
+            xy = aim_chief(p, system, f, wl)
+
+            def ray(pp):
+                o, d = launch(xy, f, pp[0], pp[1], spec.epd, system)
+                r = trace_ray(p, system, wl, o, d)
+                dl = R_img.T @ r["dir"]
+                img = r["local"][-1]
+                return jnp.array([img[0], img[1], dl[0] / dl[2], dl[1] / dl[2]])
+
+            J = jax.jacfwd(ray)(jnp.zeros(2))
+            return -J[1, 1] / J[3, 1], -J[0, 0] / J[2, 0]
+
+        return jax.vmap(per_field)(fields)
+
+    st, ss = EM.compiled(f"focus {fields.shape[0]} {wl}", system, spec, fn)(params)
+    return np.asarray(st), np.asarray(ss)
