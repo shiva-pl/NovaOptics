@@ -81,3 +81,36 @@ def test_window_smoke():
     assert opts.workflow == "phase-first" and opts.spec().efl == 50.0
     w.close()
     app.processEvents()
+
+
+@needs_results
+def test_lens_data_editor_round_trip():
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    from novaoptics.engine import design as ED
+    from novaoptics.gui.lensdata import LensDataEditor
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    d = R.engine_from_design(R.from_json(json.loads(RESULTS.read_text())[1]))
+    w = LensDataEditor()
+    w.show_design(d)
+    prob, params, spec, free = w.build()
+    assert prob.system == d.problem.system
+    assert spec.fields == d.spec.fields and spec.wavelengths == pytest.approx(d.spec.wavelengths)
+    assert ED.mean_wfe(prob, params, spec) == pytest.approx(ED.mean_wfe(d.problem, d.params,
+                                                                        d.spec), rel=1e-9)
+    # a zoom-like operand: the back focal distance per configuration
+    w.add_config()
+    w.add_config()
+    col = 1
+    w.ctable.insertColumn(col)
+    w.ctable.setHorizontalHeaderItem(col, QtWidgets.QTableWidgetItem("6:t"))
+    for r, v in enumerate(("40.5", "40.7")):
+        w.ctable.setItem(r, col, QtWidgets.QTableWidgetItem(v))
+    prob, params, spec, free = w.build()
+    assert [c.overrides for c in prob.configs] == [((6, "t"),), ((6, "t"),)]
+    assert float(params["mc"][1]["6:t"]) == pytest.approx(40.7)
+    w.close()
+    app.processEvents()
