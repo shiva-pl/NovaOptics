@@ -183,6 +183,7 @@ def morph_element(z, cfg, problem: EM.Problem):
 
 
 def _morph(problem, params, spec, steps=20, iters=30, mu_b=1e-5, jump=1.5, polish_iters=80,
+           vp=1.0,
            log=None):
     """Morph problem.morphing[0] into glass (adaptive homotopy steps, as in MATERIALIZE)."""
     from . import materials as M
@@ -205,9 +206,9 @@ def _morph(problem, params, spec, steps=20, iters=30, mu_b=1e-5, jump=1.5, polis
     def step(z, s):
         mu = mu_b * s / max(1.0 - s, 1e-3) ** 2 if s < 1 else 0.0
         z, _ = optimize_design(problem, z, spec, free, iters=iters, transform=morph_element,
-                               s=s, mu=mu, virtual_petzval=1.0)
+                               s=s, mu=mu, virtual_petzval=vp)
         p = morph_element(z, EM.make_cfg(s=s), problem)
-        return z, p, mean_wfe(problem, p, spec, vp=1.0)
+        return z, p, mean_wfe(problem, p, spec, vp=vp)
 
     ds0 = 1.0 / steps
     s_prev, ds, prev = 0.0, ds0, None
@@ -232,14 +233,15 @@ def _morph(problem, params, spec, steps=20, iters=30, mu_b=1e-5, jump=1.5, polis
 
 
 def insert_screen(problem: EM.Problem, params, i, r_norm, glass=(1.62, 50.0), n_phase=4,
-                  front_gap=4.0):
+                  front_gap=4.0, phase="glass"):
     """Insert a zero-power ideal phase screen on the rear face of a zero-thickness flat
     slab of model glass, in the middle of the air space after surface i (i = -1: in
     front of the first surface, `front_gap` ahead of it).  The system is unchanged;
     the new pair is marked as morphing (problem.morphing)."""
     front = Surface(material="model", label="new front")
-    # the screen disperses like the glass of its slab (as in the pipeline's COLOR stage)
-    rear = Surface(phase="glass", n_phase=n_phase, r_norm=r_norm, label="new rear")
+    # phase "glass": the screen disperses like its slab (as in the pipeline's COLOR
+    # stage); "ideal": achromatic
+    rear = Surface(phase=phase, n_phase=n_phase, r_norm=r_norm, label="new rear")
     p = dict(params, s=[dict(q) for q in params["s"]])
     if i >= 0:
         t = float(params["s"][i]["t"])
@@ -253,8 +255,12 @@ def insert_screen(problem: EM.Problem, params, i, r_norm, glass=(1.62, 50.0), n_
     return dataclasses.replace(prob, morphing=((i + 1, i + 2),)), p
 
 
+VARIANTS = (("ideal", 0.0), ("glass", 1.0))
+
+
 def add_element(problem: EM.Problem, params, spec: Spec, positions=None, glass=(1.62, 50.0),
-                n_phase=4, min_space=2.0, front_gap=4.0, snap=True, steps=20, log=None):
+                n_phase=4, min_space=2.0, front_gap=4.0, snap=True, steps=20, log=None,
+                variants=VARIANTS):
     """Add one air-spaced singlet; returns (problem, params, report).
 
     Every air space at least `min_space` thick, and the space in front of the first
@@ -263,6 +269,12 @@ def add_element(problem: EM.Problem, params, spec: Spec, positions=None, glass=(
     indices whose following space is used, -1 = in front) restricts the candidates.
     Each candidate is optimized in phase space, morphed into glass, polished and
     (snap=True) given catalog glasses; the best real merit wins.
+
+    Every position is tried with each phase-stage variant (screen kind, virtual-Petzval
+    weight): an achromatic screen judged on the flat image, and a screen dispersing
+    like its free slab glass judged with virtual Petzval (as the pipeline does).  Which
+    leads to the better glass system differed between positions and could not be told
+    in phase space (on the spherical triplet: 0.178 vs. 0.203 waves best of each).
     """
     S = problem.system.surfaces
     over = {(i, k) for c in problem.configs for i, k in c.overrides}
@@ -273,30 +285,33 @@ def add_element(problem: EM.Problem, params, spec: Spec, positions=None, glass=(
                             and float(params["s"][i]["t"]) >= min_space]
     sd = clear_semi_diameters(problem, params, spec)
 
-    def candidate(i):
+    def candidate(item):
+        i, (kind, vp) = item
         rn = float(max(sd[max(i, 0)], sd[min(i + 1, len(S) - 1)], 1.0))
-        prob, p = insert_screen(problem, params, i, rn, glass, n_phase, front_gap)
+        prob, p = insert_screen(problem, params, i, rn, glass, n_phase, front_gap, kind)
         f, r = i + 1, i + 2
         # phase space: the screen takes power and aspheric phase, the rest re-balances
         free = variables(prob)
-        free["s"][f] = {"nd": True, "vd": True}  # color correction in phase space
+        # a dispersing screen corrects color in phase space with its slab's glass
+        free["s"][f] = {"nd": True, "vd": True} if kind == "glass" else {}
         free["s"][r] = {"t": True, "pcoef": True}
-        p, _ = optimize_design(prob, p, spec, free, iters=80, s=0.0, virtual_petzval=1.0)
-        phase_wfe = mean_wfe(prob, p, spec, vp=1.0)
-        prob, p = _morph(prob, p, spec, steps=steps)
+        p, _ = optimize_design(prob, p, spec, free, iters=80, s=0.0, virtual_petzval=vp)
+        phase_wfe = mean_wfe(prob, p, spec, vp=vp)
+        prob, p = _morph(prob, p, spec, steps=steps, vp=vp)
         glass_wfe = mean_wfe(prob, p, spec)
         if snap:
             prob, p = snap_glasses(prob, p, spec)
         c = cost(prob, p, spec)
-        return {"after": i, "cost": c if np.isfinite(c) else np.inf, "problem": prob,
+        return {"after": i, "variant": kind, "cost": c if np.isfinite(c) else np.inf,
+                "problem": prob,
                 "params": p, "phase_wfe": phase_wfe, "glass_wfe": glass_wfe,
                 "wfe": mean_wfe(prob, p, spec)}
 
-    results = pmap(candidate, positions)
+    results = pmap(candidate, [(i, v) for i in positions for v in variants])
     for r in results:
         if log:
             where = "in front" if r["after"] < 0 else f"after surface {r['after']}"
-            log(f"   new element {where}: phase {r['phase_wfe']:.3f} -> "
+            log(f"   new element {where} ({r['variant']} screen): phase {r['phase_wfe']:.3f} -> "
                 f"glass {r['glass_wfe']:.3f} -> final {r['wfe']:.3f} waves")
     best = min(results, key=lambda r: r["cost"])
     return best["problem"], best["params"], results
